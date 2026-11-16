@@ -1207,6 +1207,7 @@ ${polishText}${altsBlock}`;
       '6. ZAKRES IT JEST TYLKO POMOCNICZY: Używaj logiki branży IT do korekty błędów ASR TYLKO wtedy, gdy polskie słowo ewidentnie nie ma sensu. Zwykłe potoczne słowa (np. "potłumaczmy") tłumacz normalnie. Nie wymyślaj na siłę terminów technicznych (jak "troubleshoot"), gdy z kontekstu wynika luźna rozmowa.',
       speakerName ? `\nAKTUALNIE PRZEMAWIA: ${speakerName}` : '',
       config.debateTopic ? `\nTEMAT I KONTEKST DEBATY:\n${config.debateTopic.trim()}` : '',
+      config.currentSlideContext ? `\n[AKTUALNY SLAJD PREZENTACJI] (terminologia i pojęcia widoczne teraz na ekranie — używaj do poprawy nazw własnych i akronimów):\n${config.currentSlideContext.trim()}` : '',
       config.glossary ? `\n[SŁOWNIK KONTEKSTOWY] (pojęcia, nazwiska, narzędzia — stosuj bezwzględnie):\n${config.glossary.trim()}` : '',
       contextLines ? `\n[KONTEKST] (poprzednie wypowiedzi — tylko do spójności, NIE tłumacz ich ponownie!):\n${contextLines}` : '',
       isAudio

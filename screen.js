@@ -15,11 +15,12 @@ import {
  * Funkcja renderująca stan i wygląd ekranu prezentacji na dowolnym zestawie elementów DOM
  * (używana zarówno w pełnoekranowym screen.html, jak i w miniaturowym podglądzie w index.html).
  */
-export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor = 1) {
+export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor = 1, presState = null) {
   const {
     bgLayer,
     bgImage,
     bgVideo,
+    slideImg,
     bgOverlay,
     safeArea,
     customBanner,
@@ -30,13 +31,26 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
     linesWrapper
   } = dom;
 
-  // 1. Konfiguracja Tła
+  const isBrowserSlideActive = Boolean(presState && presState.active && presState.mode === 'browser' && presState.presentationId);
+
+  // 1. Konfiguracja Tła (lub aktywnego slajdu prezentacji)
   const bgType = settings.bgType || 'gradient';
   bgLayer.style.background = '#090D16';
   bgImage.classList.add('hidden');
   bgVideo.classList.add('hidden');
+  if (slideImg) slideImg.classList.add('hidden');
 
-  if (bgType === 'color') {
+  if (isBrowserSlideActive) {
+    bgLayer.style.background = '#000000';
+    if (slideImg && !presState.blackoutSlide && presState.currentSlideUrl) {
+      slideImg.classList.remove('hidden');
+      if (slideImg.getAttribute('data-src') !== presState.currentSlideUrl) {
+        slideImg.src = presState.currentSlideUrl;
+        slideImg.setAttribute('data-src', presState.currentSlideUrl);
+      }
+    }
+    bgOverlay.style.background = 'transparent';
+  } else if (bgType === 'color') {
     bgLayer.style.background = settings.bgColor || '#090D16';
   } else if (bgType === 'gradient') {
     bgLayer.style.background = settings.bgGradient || 'linear-gradient(135deg, #060B19 0%, #0F172A 50%, #1E1B4B 100%)';
@@ -63,8 +77,8 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
     }
   }
 
-  // Przyciemnienie nałożone na tło (nie przyciemniamy w trybie Chroma Key / Green Screen)
-  if (bgType === 'chroma') {
+  // Przyciemnienie nałożone na tło (nie przyciemniamy w trybie Chroma Key / Green Screen ani gdy wyświetlany jest slajd)
+  if (isBrowserSlideActive || bgType === 'chroma') {
     bgOverlay.style.background = 'transparent';
   } else {
     const dim = Number(settings.bgDimOpacity ?? 0.35);
@@ -72,19 +86,28 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
   }
 
   // 2. Marginesy bezpieczne (Safe Area) oraz pozycjonowanie w pionie
-  safeArea.style.paddingTop = `${settings.marginTopPct ?? 8}%`;
-  safeArea.style.paddingBottom = `${settings.marginBottomPct ?? 8}%`;
-  safeArea.style.paddingLeft = `${settings.marginLeftPct ?? 7}%`;
-  safeArea.style.paddingRight = `${settings.marginRightPct ?? 7}%`;
-
-  if (settings.displayMode === 'lower-third') {
-    safeArea.style.justifyContent = 'flex-end';
+  if (isBrowserSlideActive) {
+    const subPos = presState.subtitlePosition || 'bottom';
+    safeArea.style.paddingTop = subPos === 'top' ? '2.5%' : '4%';
+    safeArea.style.paddingBottom = subPos === 'bottom' ? '2.5%' : '4%';
+    safeArea.style.paddingLeft = '5%';
+    safeArea.style.paddingRight = '5%';
+    safeArea.style.justifyContent = subPos === 'top' ? 'flex-start' : (subPos === 'center' ? 'center' : 'flex-end');
   } else {
-    safeArea.style.justifyContent = 'center';
+    safeArea.style.paddingTop = `${settings.marginTopPct ?? 8}%`;
+    safeArea.style.paddingBottom = `${settings.marginBottomPct ?? 8}%`;
+    safeArea.style.paddingLeft = `${settings.marginLeftPct ?? 7}%`;
+    safeArea.style.paddingRight = `${settings.marginRightPct ?? 7}%`;
+
+    if (settings.displayMode === 'lower-third') {
+      safeArea.style.justifyContent = 'flex-end';
+    } else {
+      safeArea.style.justifyContent = 'center';
+    }
   }
 
-  // 3. Obsługa trybu Blackout (wygaszenie samego tekstu na ekranie)
-  if (liveState.blackout) {
+  // 3. Obsługa trybu Blackout lub ukrycia napisów nad prezentacją
+  if (liveState.blackout || (isBrowserSlideActive && presState.hideSubtitles)) {
     customBanner.classList.add('hidden');
     subtitlesContainer.classList.add('hidden');
     return;
@@ -95,7 +118,8 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
     settings.textShadowPreset,
     Math.max(0, Math.round((settings.textStrokePx ?? 2) * scaleFactor))
   );
-  const scaledFontSize = Math.max(11, Math.round((settings.fontSizePx || 64) * scaleFactor));
+  const slideFontScale = isBrowserSlideActive ? Number(presState.subtitleFontScale ?? 0.85) : 1;
+  const scaledFontSize = Math.max(11, Math.round((settings.fontSizePx || 64) * scaleFactor * slideFontScale));
 
   if (liveState.customBanner && liveState.customBanner.active && (liveState.customBanner.title || liveState.customBanner.subtitle)) {
     subtitlesContainer.classList.add('hidden');
@@ -125,7 +149,16 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
   subtitlesContainer.style.textAlign = settings.textAlign || 'center';
   subtitlesContainer.style.alignItems = settings.textAlign === 'left' ? 'flex-start' : 'center';
 
-  if (settings.textBoxEnabled) {
+  if (isBrowserSlideActive) {
+    const pad = Math.max(8, Math.round(18 * scaleFactor));
+    const radius = Math.max(6, Math.round(14 * scaleFactor));
+    const op = Number(presState.subtitleOpacity ?? 0.78);
+    subtitlesContainer.style.background = `rgba(6, 11, 25, ${op})`;
+    subtitlesContainer.style.padding = `${pad}px ${Math.round(pad * 1.5)}px`;
+    subtitlesContainer.style.borderRadius = `${radius}px`;
+    subtitlesContainer.style.backdropFilter = 'blur(8px)';
+    subtitlesContainer.style.border = '1px solid rgba(255,255,255,0.16)';
+  } else if (settings.textBoxEnabled) {
     const pad = Math.round((settings.textBoxPaddingPx ?? 28) * scaleFactor);
     const radius = Math.round((settings.textBoxRadiusPx ?? 18) * scaleFactor);
     const blur = Math.round((settings.textBoxBlurPx ?? 10) * scaleFactor);
@@ -154,7 +187,7 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
 
   let visibleEntries = [];
 
-  if (settings.displayMode === 'single-center' || settings.displayMode === 'lower-third') {
+  if (isBrowserSlideActive || settings.displayMode === 'single-center' || settings.displayMode === 'lower-third') {
     if (hasDisplayableDraft) {
       visibleEntries = [{
         id: draftId,
@@ -203,7 +236,7 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
 
   // 8. Sprawdź sygnaturę renderowania — jeśli tekst na ekranie, mówcy i styl liter nie uległy zmianie,
   //    nie dotykaj DOM w ogóle (100% eliminacji migania przy zdarzeniach pośrednich)
-  const maxSlots = (settings.displayMode === 'single-center' || settings.displayMode === 'lower-third')
+  const maxSlots = (isBrowserSlideActive || settings.displayMode === 'single-center' || settings.displayMode === 'lower-third')
     ? 1
     : Math.max(1, Number(settings.maxVisibleItems) || 3);
 
@@ -371,11 +404,14 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
 if (document.getElementById('presentationBody')) {
   const sync = new SyncManager('screen');
   let currentBgRecord = null;
+  let currentPresState = null;
+  let lastPresVersion = -1;
 
   const dom = {
     bgLayer: document.getElementById('stageBgLayer'),
     bgImage: document.getElementById('stageBgImage'),
     bgVideo: document.getElementById('stageBgVideo'),
+    slideImg: document.getElementById('stageSlideImg'),
     bgOverlay: document.getElementById('stageBgOverlay'),
     safeArea: document.getElementById('stageSafeArea'),
     customBanner: document.getElementById('stageCustomBanner'),
@@ -387,8 +423,27 @@ if (document.getElementById('presentationBody')) {
   };
 
   const render = () => {
-    renderStageDOM(dom, sync.settings, sync.liveState, currentBgRecord, 1);
+    renderStageDOM(dom, sync.settings, sync.liveState, currentBgRecord, 1, currentPresState);
   };
+
+  async function pollPresentationState() {
+    try {
+      const res = await fetch('/api/presentation', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.version !== lastPresVersion) {
+          lastPresVersion = data.version;
+          currentPresState = data;
+          render();
+        }
+      }
+    } catch {
+      // ignore transient network errors
+    } finally {
+      setTimeout(pollPresentationState, 250);
+    }
+  }
+  pollPresentationState();
 
   async function refreshBackground() {
     currentBgRecord = await loadBackgroundMedia();

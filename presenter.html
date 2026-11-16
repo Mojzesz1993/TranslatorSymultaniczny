@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Panel Sterowania Prezentacją — Debate Live Translator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    .pres-workspace {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 18px;
+      padding: 18px 20px 28px;
+      max-width: 1700px;
+      margin: 0 auto;
+    }
+    @media (max-width: 1100px) {
+      .pres-workspace { grid-template-columns: 1fr; }
+    }
+    .drop-zone {
+      border: 2px dashed rgba(56, 189, 248, 0.45);
+      border-radius: 12px;
+      padding: 20px 14px;
+      text-align: center;
+      background: rgba(15, 23, 42, 0.65);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: #38bdf8;
+      background: rgba(56, 189, 248, 0.12);
+    }
+    .pres-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 280px;
+      overflow-y: auto;
+    }
+    .pres-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .pres-item:hover { border-color: rgba(56, 189, 248, 0.5); }
+    .pres-item.active {
+      border-color: #38bdf8;
+      background: rgba(56, 189, 248, 0.15);
+    }
+    .pres-item-thumb {
+      width: 64px;
+      height: 36px;
+      object-fit: cover;
+      border-radius: 5px;
+      background: #020617;
+      flex-shrink: 0;
+    }
+    .pres-stage-grid {
+      display: grid;
+      grid-template-columns: 1.55fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .pres-stage-grid { grid-template-columns: 1fr; }
+    }
+    .slide-monitor {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+    }
+    .slide-monitor img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .slide-monitor-subs {
+      position: absolute;
+      left: 5%;
+      right: 5%;
+      padding: 10px 16px;
+      border-radius: 10px;
+      text-align: center;
+      color: #fff;
+      font-weight: 800;
+      font-size: 15px;
+      line-height: 1.3;
+      pointer-events: none;
+      text-shadow: 0 2px 6px rgba(0,0,0,0.9);
+      transition: all 0.15s ease;
+    }
+    .slide-monitor-subs.pos-bottom { bottom: 4%; }
+    .slide-monitor-subs.pos-top { top: 4%; }
+    .slide-monitor-subs.pos-center { top: 50%; transform: translateY(-50%); }
+    .pilot-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .pilot-btn-big {
+      flex: 1;
+      min-width: 150px;
+      padding: 14px 18px;
+      font-size: 15px;
+      font-weight: 800;
+    }
+    .thumbs-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+      max-height: 320px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .thumb-card {
+      position: relative;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 2px solid rgba(148, 163, 184, 0.2);
+      background: #020617;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .thumb-card:hover { border-color: rgba(56, 189, 248, 0.65); }
+    .thumb-card.active {
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
+    }
+    .thumb-card img {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: contain;
+      display: block;
+    }
+    .thumb-num {
+      position: absolute;
+      top: 5px;
+      left: 6px;
+      background: rgba(2, 6, 23, 0.85);
+      color: #e2e8f0;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 999px;
+    }
+    .notes-box {
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: #cbd5e1;
+      max-height: 130px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body class="operator-body">
+  <header class="op-header">
+    <div class="op-brand">
+      <div class="op-logo-badge" style="background: linear-gradient(135deg, #0ea5e9, #6366f1);">PPTX</div>
+      <div>
+        <div class="op-brand-title">Panel Sterowania Prezentacją</div>
+        <div class="op-brand-sub" id="lanHint">Ładowanie adresu sieciowego...</div>
+      </div>
+    </div>
+
+    <div class="op-transport-bar">
+      <div id="presStatusPill" class="status-pill">
+        <span class="status-dot"></span>
+        <span id="presStatusText">BRAK AKTYWNEJ PREZENTACJI</span>
+      </div>
+
+      <button id="btnModeBrowser" class="btn btn-sm btn-primary" title="Wyświetlaj slajdy bezpośrednio w oknie Ekranu Prezentacji (screen.html)">
+        🌐 Tryb Przeglądarkowy
+      </button>
+      <button id="btnModeNative" class="btn btn-sm btn-outline" title="Uruchom pokaz w Microsoft PowerPoint z przezroczystą nakładką napisów">
+        📊 Natywny PowerPoint
+      </button>
+      <button id="btnDeactivatePres" class="btn btn-sm btn-outline" title="Wyłącz prezentację i wróć do zwykłego tła debaty">
+        ⏹ Wyłącz prezentację
+      </button>
+    </div>
+  </header>
+
+  <main class="pres-workspace">
+    <!-- LEWA KOLUMNA: Upload, Biblioteka i Konfiguracja Nakładki -->
+    <div class="op-column">
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">📤 Wgraj prezentację</div>
+        </div>
+        <div class="card-body" style="display:flex; flex-direction:column; gap:12px;">
+          <div id="dropZone" class="drop-zone">
+            <div style="font-size: 24px; margin-bottom: 6px;">📊</div>
+            <div style="font-weight: 700; font-size: 13.5px; color: #f8fafc;">Przeciągnij plik tutaj lub kliknij</div>
+            <div style="font-size: 11.5px; color: #94a3b8; margin-top: 4px;">Obsługiwane: <b>.pptx</b>, <b>.ppt</b>, <b>.pdf</b>, <b>.png/.jpg</b></div>
+            <input type="file" id="fileInput" accept=".pptx,.ppt,.pdf,.png,.jpg,.jpeg,.webp" hidden />
+          </div>
+          <div id="uploadStatus" class="hidden" style="font-size: 12.5px; padding: 8px 10px; border-radius: 8px; background: rgba(56, 189, 248, 0.14); color: #bae6fd;"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">📚 Biblioteka prezentacji</div>
+        </div>
+        <div class="card-body">
+          <div id="presList" class="pres-list">
+            <div style="font-size: 12.5px; color: #64748b;">Brak wgranych prezentacji.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">💬 Napisy nad prezentacją i Tryb Natywny</div>
+        </div>
+        <div class="card-body" style="display:flex; flex-direction:column; gap:12px;">
+          <div>
+            <label style="font-size:12px; color:#94a3b8; font-weight:700; display:block; margin-bottom:4px;">Pozycja napisów na slajdzie</label>
+            <select id="selSubPosition" class="form-control">
+              <option value="bottom">Na dole ekranu (Zalecane)</option>
+              <option value="top">U góry ekranu</option>
+              <option value="center">Na środku ekranu</option>
+            </select>
+          </div>
+
+          <div>
+            <label style="font-size:12px; color:#94a3b8; font-weight:700; display:flex; justify-content:space-between;">
+              <span>Przezroczystość tła belki napisów</span>
+              <span id="lblOpacityVal">78%</span>
+            </label>
+            <input id="rngOpacity" type="range" min="0" max="95" value="78" style="width:100%;" />
+          </div>
+
+          <div>
+            <label style="font-size:12px; color:#94a3b8; font-weight:700; display:flex; justify-content:space-between;">
+              <span>Rozmiar czcionki nad slajdem</span>
+              <span id="lblFontScaleVal">85%</span>
+            </label>
+            <input id="rngFontScale" type="range" min="55" max="140" value="85" style="width:100%;" />
+          </div>
+
+          <hr style="border-color: rgba(148,163,184,0.15); margin: 4px 0;" />
+
+          <div>
+            <label style="font-size:12px; color:#94a3b8; font-weight:700; display:block; margin-bottom:4px;">Monitor dla nakładki Always-On-Top (Tryb Natywny)</label>
+            <select id="selNativeMonitor" class="form-control"></select>
+          </div>
+
+          <div style="display:flex; gap:8px;">
+            <button id="btnNativeStart" class="btn btn-sm btn-start" style="flex:1;">▶ Start PowerPoint + Nakładka</button>
+            <button id="btnNativeStop" class="btn btn-sm btn-outline">✕ Zamknij</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- PRAWA KOLUMNA: Podgląd Slajdów, Pilot i Miniaturki -->
+    <div class="op-column">
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">🎬 Podgląd na żywo i Pilot</div>
+          <div id="slideCounterBadge" style="font-size: 13px; font-weight: 800; color: #38bdf8;">Slajd — / —</div>
+        </div>
+        <div class="card-body">
+          <div class="pres-stage-grid">
+            <div>
+              <div style="font-size:11.5px; color:#94a3b8; font-weight:700; margin-bottom:6px;">AKTUALNY SLAJD (Z NAPISAMI NA ŻYWO)</div>
+              <div class="slide-monitor">
+                <img id="currentSlideImg" alt="Podgląd bieżącego slajdu" />
+                <div id="currentSlideBlackout" class="hidden" style="position:absolute; inset:0; background:#000; display:flex; align-items:center; justify-content:center; color:#64748b; font-weight:800;">BLACKOUT SLAJDU</div>
+                <div id="previewSubBar" class="slide-monitor-subs pos-bottom hidden"></div>
+              </div>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div>
+                <div style="font-size:11.5px; color:#94a3b8; font-weight:700; margin-bottom:6px;">NASTĘPNY SLAJD</div>
+                <div class="slide-monitor" style="opacity:0.9;">
+                  <img id="nextSlideImg" alt="Podgląd następnego slajdu" />
+                  <div id="nextSlideEnd" class="hidden" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#64748b; font-size:13px; font-weight:700;">Koniec prezentacji</div>
+                </div>
+              </div>
+
+              <div>
+                <div style="font-size:11.5px; color:#94a3b8; font-weight:700; margin-bottom:4px;">NOTATKI PRELEGENTA / TEKST SLAJDU (KONTEKST DLA GEMINI)</div>
+                <div id="speakerNotesBox" class="notes-box">Brak notatek dla tego slajdu.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pilot-controls">
+            <button id="btnPrevSlide" class="btn btn-outline pilot-btn-big">◀ Poprzedni (←)</button>
+            <button id="btnNextSlide" class="btn btn-primary pilot-btn-big">Następny (→ / Spacja) ▶</button>
+            <button id="btnBlackoutSlide" class="btn btn-outline">🌑 Blackout slajdu (B)</button>
+            <button id="btnToggleSubs" class="btn btn-outline">💬 Ukryj napisy (H)</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">🗂 Wszystkie slajdy (kliknij, aby przejść)</div>
+        </div>
+        <div class="card-body">
+          <div id="thumbsGrid" class="thumbs-grid">
+            <div style="font-size: 12.5px; color: #64748b;">Wgraj lub wybierz prezentację, aby zobaczyć miniaturki slajdów.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script type="module" src="presenter.js"></script>
+</body>
+</html>

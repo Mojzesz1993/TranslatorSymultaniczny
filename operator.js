@@ -17,7 +17,11 @@ import { VoiceIdentificationManager } from './voice-id.js';
 
 const sync = new SyncManager('operator');
 let currentBgRecord = null;
+let currentPresentationState = null;
+let lastPresVersion = -1;
+let presenterPortCached = 8766;
 let presentationWindowRef = null;
+let presenterControlWindowRef = null;
 
 // Elementy DOM Mini-Monitora (Podgląd 16:9)
 const previewWrapper = document.getElementById('previewMonitorWrapper');
@@ -25,6 +29,7 @@ const previewDom = {
   bgLayer: document.getElementById('prevBgLayer'),
   bgImage: document.getElementById('prevBgImage'),
   bgVideo: document.getElementById('prevBgVideo'),
+  slideImg: document.getElementById('prevSlideImg'),
   bgOverlay: document.getElementById('prevBgOverlay'),
   safeArea: document.getElementById('prevSafeArea'),
   customBanner: document.getElementById('prevCustomBanner'),
@@ -136,7 +141,21 @@ function syncVoiceProfilesToLiveState() {
 
 // Inicjalizacja silnika tłumaczenia
 const engine = new DebateTranslatorEngine({
-  getApiConfig: () => sync.apiConfig,
+  getApiConfig: () => {
+    const slideParts = [];
+    if (currentPresentationState && currentPresentationState.active) {
+      if (currentPresentationState.currentSlideText) {
+        slideParts.push(currentPresentationState.currentSlideText);
+      }
+      if (currentPresentationState.currentSpeakerNotes) {
+        slideParts.push(`Notatki: ${currentPresentationState.currentSpeakerNotes}`);
+      }
+    }
+    return {
+      ...sync.apiConfig,
+      currentSlideContext: slideParts.join('\n').slice(0, 1800)
+    };
+  },
   getRecentContext: () => sync.liveState.items.slice(-6),
   onAudioSourceReady: (audioCtx, sourceNode) => {
     voiceId.attachToAudioContext(audioCtx, sourceNode);
@@ -269,7 +288,7 @@ document.getElementById('btnDismissError')?.addEventListener('click', () => {
 function renderMiniPreview() {
   const rect = previewWrapper.getBoundingClientRect();
   const scaleFactor = rect.width > 0 ? rect.width / 1920 : 0.3;
-  renderStageDOM(previewDom, sync.settings, sync.liveState, currentBgRecord, scaleFactor);
+  renderStageDOM(previewDom, sync.settings, sync.liveState, currentBgRecord, scaleFactor, currentPresentationState);
   updateModeBadges();
 }
 
@@ -1284,6 +1303,47 @@ function bindTransportAndActions() {
       'width=1280,height=720,menubar=no,toolbar=no,location=no,status=no'
     );
   });
+
+  // Otwarcie osobnego Panelu Sterowania Prezentacją (port 8766)
+  document.getElementById('btnOpenPresenterWindow')?.addEventListener('click', () => {
+    if (presenterControlWindowRef && !presenterControlWindowRef.closed) {
+      presenterControlWindowRef.focus();
+      return;
+    }
+    const host = window.location.hostname || 'localhost';
+    presenterControlWindowRef = window.open(
+      `http://${host}:${presenterPortCached}/`,
+      'DebatePresenterControl',
+      'width=1280,height=840'
+    );
+  });
+
+  // Pobierz info o porcie panelu slajdów i uruchom synchronizację stanu slajdów dla mini-podglądu i kontekstu Gemini
+  fetch('/api/server-info', { cache: 'no-store' })
+    .then((r) => r.json())
+    .then((info) => {
+      if (info && info.presenterPort) presenterPortCached = info.presenterPort;
+    })
+    .catch(() => {});
+
+  async function pollOperatorPresentation() {
+    try {
+      const res = await fetch('/api/presentation', { cache: 'no-store' });
+      if (res.ok) {
+        const st = await res.json();
+        if (st && st.version !== lastPresVersion) {
+          lastPresVersion = st.version;
+          currentPresentationState = st;
+          renderMiniPreview();
+        }
+      }
+    } catch {
+      // ignore
+    } finally {
+      setTimeout(pollOperatorPresentation, 350);
+    }
+  }
+  pollOperatorPresentation();
 
   // Wyczyść napisy z ekranu
   document.getElementById('btnClearScreen').addEventListener('click', () => {

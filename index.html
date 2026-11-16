@@ -47,6 +47,11 @@
       <button id="btnOpenScreenWindow" class="btn btn-primary" title="Otwiera czyste okno prezentacji do przeciągnięcia na rzutnik / TV">
         🖥 OTWÓRZ EKRAN PREZENTACJI
       </button>
+
+      <!-- Otwieranie osobnego Panelu Sterowania Prezentacją (port 8766) -->
+      <button id="btnOpenPresenterWindow" class="btn btn-outline" title="Otwiera osobny panel wgrywania i sterowania slajdami PowerPoint / PDF (port 8766)">
+        📊 PANEL SLAJDÓW
+      </button>
     </div>
   </header>
 
@@ -82,6 +87,7 @@
           <div class="stage-bg-layer" id="prevBgLayer">
             <img id="prevBgImage" class="stage-bg-media hidden" alt="" />
             <video id="prevBgVideo" class="stage-bg-media hidden" autoplay loop muted playsinline></video>
+            <img id="prevSlideImg" class="stage-bg-media hidden" alt="" style="object-fit: contain; background: #000;" />
             <div id="prevBgOverlay" class="stage-bg-overlay"></div>
           </div>
           <div class="stage-safe-area" id="prevSafeArea">

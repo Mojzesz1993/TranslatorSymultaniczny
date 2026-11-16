@@ -25,5 +25,6 @@ Aplikacja lokalna do symultanicznego tłumaczenia debat i konferencji prowadzony
 1. Kliknij dwukrotnie **`Uruchom_Translator.bat`** (lub skrót na Pulpicie).
 2. Aplikacja uruchomi lokalny serwer (`http://localhost:8765`) i otworzy **Panel Operatora** w przeglądarce (zalecany Google Chrome lub Microsoft Edge).
 3. Kliknij **`🖥 OTWÓRZ EKRAN PREZENTACJI`**, przeciągnij okno na drugi ekran (rzutnik / TV) i naciśnij **`F`** (pełny ekran).
+4. **Prezentacje (PowerPoint / PDF):** Kliknij **`📊 PANEL SLAJDÓW`** (lub wejdź na `http://localhost:8766`), aby wgrać plik `.pptx`/`.pdf`, sterować slajdami (z podglądem i notatkami) oraz wyświetlać tłumaczenie na żywo bezpośrednio nad slajdami.
 
 Szczegółowa instrukcja obsługi znajduje się w pliku [INSTRUKCJA.md](./INSTRUKCJA.md).
