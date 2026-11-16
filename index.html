@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Panel Operatora — Debate Live Translator (PL -> EN)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&family=JetBrains+Mono:wght@600;700&family=Montserrat:wght@600;700;800;900&family=Oswald:wght@600;700&family=Roboto:wght@700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body class="operator-body">
+  <!-- PASEK GÓRNY OPERATORA -->
+  <header class="op-header">
+    <div class="op-brand">
+      <div class="op-logo-badge">PL▸EN</div>
+      <div>
+        <div class="op-brand-title">Debate Live Translator</div>
+        <div class="op-brand-sub">Tłumaczenie symultaniczne audio PL ➔ napisy EN na żywo</div>
+      </div>
+    </div>
+
+    <div class="op-transport-bar">
+      <!-- Status pracy -->
+      <div id="statusPill" class="status-pill">
+        <span class="status-dot"></span>
+        <span id="statusText">GOTOWY DO PRACY</span>
+      </div>
+
+      <!-- Wskaźnik wysterowania dźwięku (VU Meter) -->
+      <div class="vu-meter-box" title="Poziom sygnału wejściowego audio na żywo">
+        <span class="vu-label">AUDIO</span>
+        <div class="vu-track">
+          <div id="vuMeterFill" class="vu-fill"></div>
+        </div>
+      </div>
+
+      <!-- Przyciski Start / Stop / Mute -->
+      <button id="btnStartStop" class="btn btn-start">
+        ▶ START TŁUMACZENIA
+      </button>
+      <button id="btnMute" class="btn btn-mute" title="Wycisz wejście na czas przerwy (Skrót: Ctrl+M)">
+        ⏸ PAUZA / MUTE
+      </button>
+
+      <!-- Otwieranie Ekranu Prezentacji na rzutnik / drugi monitor -->
+      <button id="btnOpenScreenWindow" class="btn btn-primary" title="Otwiera czyste okno prezentacji do przeciągnięcia na rzutnik / TV">
+        🖥 OTWÓRZ EKRAN PREZENTACJI
+      </button>
+    </div>
+  </header>
+
+  <!-- Pasek komunikatów błędów / ostrzeżeń (ukryty domyślnie) -->
+  <div id="errorAlertBox" class="alert-banner hidden" style="margin: 12px 20px 0;">
+    <span id="errorAlertText"></span>
+    <button id="btnDismissError" class="btn btn-sm btn-outline">Zamknij</button>
+  </div>
+
+  <!-- GŁÓWNY OBSZAR ROBOCZY -->
+  <main class="op-workspace">
+    <!-- LEWA KOLUMNA: Podgląd Ekranu Na Żywo + Sterowanie Napisami + Historia -->
+    <div class="op-column">
+      <!-- Karta 1: Podgląd Ekranu Prezentacji 16:9 -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>📺 Podgląd Ekranu Prezentacji (Na żywo 16:9)</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span id="activeModeBadge" style="font-size: 11.5px; color: #38bdf8; font-weight: 700;"></span>
+            <button id="btnClearScreen" class="btn btn-sm btn-outline" title="Usuwa dotychczasowe napisy z ekranu">
+              🧹 Wyczyść ekran
+            </button>
+            <button id="btnToggleBlackout" class="btn btn-sm btn-outline" title="Ukrywa napisy i zostawia samo tło">
+              🌑 Wygaszenie tekstu (Blackout)
+            </button>
+          </div>
+        </div>
+
+        <!-- Mini-Monitor renderujący dokładnie ten sam widok co screen.html -->
+        <div class="preview-monitor-wrapper" id="previewMonitorWrapper">
+          <div class="stage-bg-layer" id="prevBgLayer">
+            <img id="prevBgImage" class="stage-bg-media hidden" alt="" />
+            <video id="prevBgVideo" class="stage-bg-media hidden" autoplay loop muted playsinline></video>
+            <div id="prevBgOverlay" class="stage-bg-overlay"></div>
+          </div>
+          <div class="stage-safe-area" id="prevSafeArea">
+            <div id="prevCustomBanner" class="stage-custom-banner hidden">
+              <div class="banner-card">
+                <h1 id="prevBannerTitle" class="banner-title"></h1>
+                <p id="prevBannerSubtitle" class="banner-subtitle"></p>
+              </div>
+            </div>
+            <div id="prevSubtitlesContainer" class="stage-subtitles-container">
+              <div id="prevSpeakerBadge" class="stage-speaker-badge hidden"></div>
+              <div id="prevLinesWrapper" class="stage-lines-wrapper"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Podgląd Live Draft (co system słyszy i tłumaczy w tym ułamku sekundy) -->
+        <div class="live-draft-panel">
+          <div>
+            <div class="draft-col-label">🇵🇱 Sczytywana mowa z mikrofonu (PL):</div>
+            <div id="liveDraftPl" class="draft-col-text">—</div>
+          </div>
+          <div>
+            <div class="draft-col-label">🇬🇧 Ostatnie gotowe tłumaczenie (EN):</div>
+            <div id="liveDraftEn" class="draft-col-text en">—</div>
+          </div>
+        </div>
+
+        <!-- Pasek szybkiego wyboru aktualnego mówcy oraz statusu Auto-Rozpoznawania Głosu -->
+        <div class="speakers-bar" style="justify-content: space-between;">
+          <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px;">
+            <span style="font-size: 12px; font-weight: 700; color: #94a3b8; margin-right: 2px;">Mówca:</span>
+            <div id="speakerChipsContainer" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <button id="btnQuickLearnActiveVoice" class="btn btn-sm btn-outline" title="Przypisz głos słyszany przez ostatnie 4 sekundy do aktualnie wybranego mówcy">
+              🎯 Ucz głos wybranego mówcy (z ostatnich 4s)
+            </button>
+            <button id="btnQuickToggleAutoVoice" class="btn btn-sm btn-primary" title="Włącz/wyłącz automatyczne rozpoznawanie mówcy po barwie głosu">
+              🤖 Auto-Głos: WŁ.
+            </button>
+            <button id="btnQuickToggleSpeakerBadges" class="btn btn-sm btn-outline" title="Pokaż lub ukryj kolorowe podpisy mówców na dużym ekranie prezentacji">
+              🏷 Podpisy na ekranie: WŁ.
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Karta 2: Ręczne wprowadzenie tekstu / Szybka interwencja + Historia Wypowiedzi -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>✍️ Szybkie Wysłanie Tekstu i Historia Wypowiedzi (Edycja na żywo)</span>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button id="btnExportTxt" class="btn btn-sm btn-outline" title="Zapisz pełny przebieg debaty do pliku TXT">
+              💾 Eksport TXT
+            </button>
+            <button id="btnExportMd" class="btn btn-sm btn-outline" title="Zapisz pełny przebieg debaty PL+EN do pliku Markdown">
+              📄 Eksport MD
+            </button>
+            <button id="btnExportSrt" class="btn btn-sm btn-outline" title="Zapisz napisy w formacie wideo SRT">
+              🎬 Eksport SRT
+            </button>
+          </div>
+        </div>
+
+        <!-- Ręczne wpisanie zdania (PL lub EN) -->
+        <div style="display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap;">
+          <input
+            type="text"
+            id="manualTextInput"
+            class="input"
+            style="flex: 1; min-width: 240px;"
+            placeholder="Wpisz własny tekst po angielsku (lub po polsku) aby wyświetlić go na ekranie..."
+          />
+          <button id="btnSendManualEn" class="btn btn-sm btn-primary" title="Wyślij wpisany tekst bezpośrednio na ekran jako gotowe zdanie EN">
+            Wyślij bezpośrednio (EN)
+          </button>
+          <button id="btnTranslateAndSendManual" class="btn btn-sm btn-indigo" title="Przetłumacz wpisany polski tekst przez Gemini i wyślij na ekran">
+            Przetłumacz PL➔EN i wyślij
+          </button>
+        </div>
+
+        <div style="font-size: 11.5px; color: #94a3b8; margin-bottom: 8px;">
+          💡 <b>Wskazówka:</b> Możesz edytować dowolne angielskie zdanie poniżej — zmiana od razu pojawi się na dużym ekranie prezentacji.
+        </div>
+
+        <!-- Lista dotychczasowych wypowiedzi -->
+        <div id="transcriptList" class="transcript-list"></div>
+      </section>
+    </div>
+
+    <!-- PRAWA KOLUMNA: Konfiguracja Tła, Wielkości Liter, Rozpoznawania Głosów, Silnika Gemini AI, Słowniczka -->
+    <div class="op-column">
+      <section class="card">
+        <!-- Nawigacja Zakładek -->
+        <div class="tabs-nav">
+          <button class="tab-btn active" data-tab="tabAppearance">🎨 Tło i Wygląd Liter</button>
+          <button class="tab-btn" data-tab="tabVoices">🗣 Rozpoznawanie Głosów (Mówcy)</button>
+          <button class="tab-btn" data-tab="tabEngine">🎙 Silnik AI i Audio</button>
+          <button class="tab-btn" data-tab="tabContext">📚 Kontekst i Słowniczek</button>
+          <button class="tab-btn" data-tab="tabBanner">🪧 Plansza Przerwy / Tytuł</button>
+        </div>
+
+        <!-- ZAKŁADKA 1: TŁO I WYGLĄD LITER -->
+        <div id="tabAppearance" class="tab-pane active">
+          <!-- Sekcja A: Wybór Tła -->
+          <div class="field-group">
+            <label class="field-label">
+              <span>1. Rodzaj tła ekranu prezentacji</span>
+            </label>
+            <div class="form-grid">
+              <select id="selBgType" class="select">
+                <option value="gradient">Gradient konferencyjny</option>
+                <option value="image">Własny obraz / grafika z dysku (JPG, PNG, WebP)</option>
+                <option value="video">Własne wideo w pętli z dysku (MP4, WebM)</option>
+                <option value="color">Jednolity kolor tła</option>
+                <option value="chroma">Green Screen / Chroma Key (do OBS / miksera wideo)</option>
+              </select>
+
+              <div>
+                <input type="file" id="fileBgUpload" accept="image/*,video/mp4,video/webm" class="hidden" />
+                <button id="btnUploadBg" class="btn btn-primary" style="width: 100%;">
+                  📁 Wybierz plik tła z dysku (Obraz / Wideo)...
+                </button>
+              </div>
+            </div>
+            <div id="bgFileInfo" style="font-size: 12px; color: #38bdf8; margin-top: 4px;"></div>
+          </div>
+
+          <!-- Szybkie presety tła i kolorów -->
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">Presety tła / Kolor jednolity</label>
+              <div class="preset-chips">
+                <button class="preset-chip" data-bg-preset="navy">Granat Debaty</button>
+                <button class="preset-chip" data-bg-preset="cinema-black">Głęboka Czerń</button>
+                <button class="preset-chip" data-bg-preset="emerald">Szmaragdowy</button>
+                <button class="preset-chip" data-bg-preset="burgundy">Bordowy Kongres</button>
+                <button class="preset-chip" data-bg-preset="greenscreen">Green Screen (#00FF00)</button>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">
+                <span>Kolor tła / Dopasowanie obrazu</span>
+              </label>
+              <div style="display: flex; gap: 8px;">
+                <input type="color" id="inpBgColor" value="#090D16" title="Wybierz własny kolor jednolity" style="width: 64px;" />
+                <select id="selBgFit" class="select" style="flex: 1;">
+                  <option value="cover">Wypełnij cały ekran (Cover)</option>
+                  <option value="contain">Dopasuj w całości (Contain — bez przycinania)</option>
+                  <option value="fill">Rozciągnij 100% (Stretch)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Przyciemnienie i rozmycie tła pod napisami -->
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">
+                <span>Przyciemnienie tła pod literami</span>
+                <span id="valBgDim" class="field-value-badge">35%</span>
+              </label>
+              <input type="range" id="rngBgDim" min="0" max="92" step="2" value="35" />
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">
+                <span>Rozmycie grafiki tła (Blur)</span>
+                <span id="valBgBlur" class="field-value-badge">0 px</span>
+              </label>
+              <input type="range" id="rngBgBlur" min="0" max="28" step="1" value="0" />
+            </div>
+          </div>
+
+          <hr style="border: none; border-top: 1px solid var(--border-color); margin: 4px 0;" />
+
+          <!-- Sekcja B: Typografia i Duże Wyraźne Litery -->
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">
+                <span>2. Tryb układu napisów na ekranie</span>
+              </label>
+              <select id="selDisplayMode" class="select">
+                <option value="teleprompter">Teleprompter / Live Transcript (ostatnie 2–4 zdania)</option>
+                <option value="single-center">Tylko aktualna wypowiedź (Centralnie na środku)</option>
+                <option value="lower-third">Napisy u dołu ekranu (Dolna belka / Cinema)</option>
+              </select>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">
+                <span>Liczba widocznych zdań (w trybie Teleprompter)</span>
+                <span id="valMaxItems" class="field-value-badge">3 zdania</span>
+              </label>
+              <input type="range" id="rngMaxItems" min="1" max="5" step="1" value="3" />
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">
+                <span>Wielkość liter na ekranie (Font Size)</span>
+                <span id="valFontSize" class="field-value-badge">64 px</span>
+              </label>
+              <input type="range" id="rngFontSize" min="28" max="125" step="2" value="64" />
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">
+                <span>Krój i grubość czcionki</span>
+              </label>
+              <div style="display: flex; gap: 8px;">
+                <select id="selFontFamily" class="select" style="flex: 1;">
+                  <option value="'Montserrat', 'Segoe UI', system-ui, sans-serif">Montserrat (Szeroka, konferencyjna)</option>
+                  <option value="'Inter', 'Segoe UI', system-ui, sans-serif">Inter (Nowoczesna, czytelna)</option>
+                  <option value="'Roboto', Arial, sans-serif">Roboto (Klasyczna TV)</option>
+                  <option value="'Oswald', Impact, sans-serif">Oswald (Wysoka, kondensowana)</option>
+                  <option value="'Arial Black', Gadget, sans-serif">Arial Black (Maksymalnie gruba)</option>
+                  <option value="Georgia, serif">Georgia (Szeryfowa, elegancka)</option>
+                </select>
+                <select id="selFontWeight" class="select" style="width: 110px;">
+                  <option value="600">SemiBold</option>
+                  <option value="700">Bold</option>
+                  <option value="800" selected>ExtraBold</option>
+                  <option value="900">Black</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">Kolor głównych liter (EN) oraz tekstu w trakcie mówienia (Draft)</label>
+              <div style="display: flex; gap: 10px; align-items: center;">
+                <div style="flex: 1;">
+                  <span style="font-size: 11px; color: #94a3b8;">Tekst gotowy (EN)</span>
+                  <input type="color" id="inpTextColor" value="#FFFFFF" />
+                </div>
+                <div style="flex: 1;">
+                  <span style="font-size: 11px; color: #94a3b8;">W trakcie mówienia (Draft)</span>
+                  <input type="color" id="inpDraftColor" value="#BAE6FD" />
+                </div>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">
+                <span>Obrys i cień liter (Czytelność na jasnym tle)</span>
+              </label>
+              <div style="display: flex; gap: 8px;">
+                <select id="selTextShadow" class="select" style="flex: 1;">
+                  <option value="strong-outline">Mocny obrys + cień (Najlepsza czytelność)</option>
+                  <option value="strong-drop">Głęboki cień kinowy</option>
+                  <option value="soft">Delikatny cień</option>
+                  <option value="neon-glow">Poświata konferencyjna</option>
+                  <option value="none">Brak cienia</option>
+                </select>
+                <select id="selTextAlign" class="select" style="width: 130px;">
+                  <option value="center">Wyśrodkuj</option>
+                  <option value="left">Do lewej</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <label class="checkbox-row">
+              <input type="checkbox" id="chkTextBoxEnabled" />
+              <span>Dodaj półprzezroczysty boks (kafel) bezpośrednio pod napisami</span>
+            </label>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="chkShowPolishOriginal" />
+              <span>Pokazuj również mały tekst oryginalny (PL) pod angielskim</span>
+            </label>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="chkUppercaseText" />
+              <span>DRUKOWANE LITERY (ALL CAPS)</span>
+            </label>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="chkShowLiveDraft" checked />
+              <span>Aktualizuj napisy na żywo w trakcie mówienia zdania</span>
+            </label>
+          </div>
+
+          <hr style="border: none; border-top: 1px solid var(--border-color); margin: 4px 0;" />
+
+          <!-- Sekcja C: Marginesy bezpieczne (aby nie zasłaniać logotypów na tle) -->
+          <div class="field-group">
+            <label class="field-label">
+              <span>3. Marginesy bezpieczne ekranu (Safe Area — np. aby ominąć logotypy na grafice tła)</span>
+              <button id="btnResetAppearance" class="btn btn-sm btn-outline">Przywróć domyślny wygląd</button>
+            </label>
+            <div class="form-grid-4">
+              <div class="field-group">
+                <label class="field-label">Góra <span id="valMarginTop" class="field-value-badge">8%</span></label>
+                <input type="range" id="rngMarginTop" min="2" max="45" step="1" value="8" />
+              </div>
+              <div class="field-group">
+                <label class="field-label">Dół <span id="valMarginBottom" class="field-value-badge">8%</span></label>
+                <input type="range" id="rngMarginBottom" min="2" max="45" step="1" value="8" />
+              </div>
+              <div class="field-group">
+                <label class="field-label">Lewo <span id="valMarginLeft" class="field-value-badge">7%</span></label>
+                <input type="range" id="rngMarginLeft" min="2" max="35" step="1" value="7" />
+              </div>
+              <div class="field-group">
+                <label class="field-label">Prawo <span id="valMarginRight" class="field-value-badge">7%</span></label>
+                <input type="range" id="rngMarginRight" min="2" max="35" step="1" value="7" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ZAKŁADKA: ROZPOZNAWANIE GŁOSÓW (MÓWCY) -->
+        <div id="tabVoices" class="tab-pane">
+          <div class="help-note">
+            <b>Automatyczne rozpoznawanie głosów (Voiceprint ID):</b> System analizuje barwę głosu (widmo Mel + ton podstawowy F0 krtani) w czasie rzeczywistym. Możesz przyuczyć głos każdego prelegenta <b>jednym kliknięciem w trakcie debaty</b> (z bufora ostatnich 4 sekund mowy), <b>nagrać próbkę 4s</b> przed debatą lub <b>wgrać plik audio</b> z głosem mówcy.
+          </div>
+
+          <!-- Pasek telemetrii głosu na żywo -->
+          <div class="voice-live-telemetry">
+            <div>
+              <span style="color: #94a3b8; font-weight: 600;">Wykryty głos na żywo:</span>
+              <b id="voiceLiveDetectedLabel" style="color: #38bdf8; margin-left: 6px;">Oczekiwanie na mowę...</b>
+            </div>
+            <div style="display: flex; align-items: center; gap: 14px;">
+              <span>Ton głosu (F0): <b id="voiceLivePitchLabel" style="color: #cbd5e1; font-family: 'JetBrains Mono', monospace;">— Hz</b></span>
+              <span>Dopasowanie: <b id="voiceLiveConfidenceLabel" style="color: #10b981; font-family: 'JetBrains Mono', monospace;">—%</b></span>
+            </div>
+          </div>
+
+          <!-- Przełączniki globalne dla rozpoznawania mówców -->
+          <div class="form-grid">
+            <label class="checkbox-row">
+              <input type="checkbox" id="chkAutoVoiceId" checked />
+              <span>Automatycznie przełączaj mówcę po rozpoznaniu głosu</span>
+            </label>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="chkShowSpeakerBadge" checked />
+              <span>Wyświetlaj kolorowe podpisy mówców przy zdaniach na ekranie</span>
+            </label>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">
+              <span>Czułość zmiany mówcy (Próg pewności dopasowania barwy głosu)</span>
+              <span id="valVoiceSensitivity" class="field-value-badge">68%</span>
+            </label>
+            <input type="range" id="rngVoiceSensitivity" min="52" max="86" step="2" value="68" />
+          </div>
+
+          <!-- Dodawanie nowego prelegenta -->
+          <div class="field-group">
+            <label class="field-label">
+              <span>Profile głosowe uczestników debaty (Imię i nazwisko, kolor etykiety, próbka głosu)</span>
+            </label>
+            <div style="display: flex; gap: 8px;">
+              <input
+                type="text"
+                id="inpNewSpeakerName"
+                class="input"
+                placeholder="Wpisz imię i nazwisko lub rolę (np. Jan Kowalski, Moderator)..."
+              />
+              <button id="btnAddVoiceSpeaker" class="btn btn-primary btn-sm" style="white-space: nowrap;">
+                ➕ Dodaj mówcę
+              </button>
+            </div>
+          </div>
+
+          <div id="voiceEnrollmentStatusMsg" style="font-size: 12px; color: #38bdf8; min-height: 18px;"></div>
+
+          <!-- Lista kart prelegentów z przyciskami przyuczania głosu -->
+          <div id="voiceProfilesContainer" class="voice-profiles-list"></div>
+          <input type="file" id="fileVoiceSampleUpload" accept="audio/*,video/mp4,video/webm" class="hidden" />
+        </div>
+
+        <!-- ZAKŁADKA 2: SILNIK AI I AUDIO -->
+        <div id="tabEngine" class="tab-pane">
+          <div class="help-note">
+            Aplikacja obsługuje dwa tryby pracy z <b>Google Gemini API</b> oraz <b>Tryb Demo</b>. Klucz API możesz bezpłatnie lub komercyjnie wygenerować w <b>Google AI Studio (aistudio.google.com)</b>. Klucz jest zapisywany wyłącznie lokalnie na Twoim laptopie.
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">
+              <span>Klucz Google Gemini API (GEMINI_API_KEY)</span>
+            </label>
+            <div style="display: flex; gap: 8px;">
+              <input
+                type="password"
+                id="inpGeminiKey"
+                class="input"
+                placeholder="Wklej swój klucz AIzaSy..."
+                autocomplete="off"
+              />
+              <button id="btnToggleKeyVisibility" class="btn btn-outline btn-sm">👁 Pokaż</button>
+              <button id="btnTestGeminiKey" class="btn btn-primary btn-sm">⚡ Testuj połączenie</button>
+            </div>
+            <div id="geminiTestResult" style="font-size: 12px; margin-top: 4px;"></div>
+          </div>
+
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">Tryb przetwarzania mowy i tłumaczenia</label>
+              <select id="selEngineMode" class="select">
+                <option value="hybrid">1. Hybryda (Web Speech PL na żywo + Gemini Flash) — Najniższe opóźnienie</option>
+                <option value="gemini-audio">2. Bezpośredni strumień Audio ➔ Gemini Multimodal Audio API</option>
+                <option value="demo">3. Tryb Demo / Symulacja Debaty (Test ekranu bez mikrofonu i klucza)</option>
+              </select>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">
+                <span>Model Google Gemini</span>
+                <button id="btnDetectModels" class="btn btn-sm btn-outline" style="padding: 2px 7px;">🔄 Wykryj dostępne modele</button>
+              </label>
+              <select id="selGeminiModel" class="select">
+                <option value="gemini-flash-latest">gemini-flash-latest (Zalecany — zawsze najnowszy Flash)</option>
+                <option value="gemini-3-flash-preview">gemini-3-flash-preview (Gemini 3 Flash)</option>
+                <option value="gemini-3.1-flash-lite-preview">gemini-3.1-flash-lite-preview (Ultra-szybki Lite)</option>
+                <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">
+                <span>Urządzenie wejściowe Audio (Mikser USB / Line-In / Mikrofon)</span>
+                <button id="btnRefreshAudioDevices" class="btn btn-sm btn-outline" style="padding: 2px 7px;">🔄 Odśwież</button>
+              </label>
+              <select id="selAudioDevice" class="select">
+                <option value="default">Domyślne urządzenie wejściowe systemu</option>
+              </select>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">
+                <span>Częstotliwość aktualizacji Live Draft w trakcie zdania</span>
+                <span id="valDraftInterval" class="field-value-badge">1.1 s</span>
+              </label>
+              <input type="range" id="rngDraftInterval" min="600" max="2500" step="100" value="1100" />
+            </div>
+          </div>
+        </div>
+
+        <!-- ZAKŁADKA 3: KONTEKST DEBATY I SŁOWNICZEK -->
+        <div id="tabContext" class="tab-pane">
+          <div class="help-note">
+            Wpisz tutaj temat debaty, nazwiska prelegentów, nazwy własne firm oraz skróty branżowe. Sztuczna inteligencja Gemini będzie z nich korzystać podczas każdego tłumaczenia, automatycznie korygując ewentualne przekręcenia nazwisk przez mikrofon.
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">Temat i kontekst debaty (instrukcja dla tłumacza AI)</label>
+            <textarea
+              id="txtDebateTopic"
+              class="textarea"
+              placeholder="np. Debata o transformacji energetycznej, cyberbezpieczeństwie i roli AI w polskiej gospodarce..."
+            ></textarea>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">Słowniczek pojęć, nazwisk i nazw własnych (1 pojęcie na linię lub lista)</label>
+            <textarea
+              id="txtGlossary"
+              class="textarea"
+              style="min-height: 110px;"
+              placeholder="np.&#10;Jan Kowalski (Prezes Zarządu XYZ)&#10;KPO = National Recovery Plan (KPO)&#10;UKE = Office of Electronic Communications"
+            ></textarea>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">Lista prelegentów (do szybkiego przełączania podpisu mówcy pod podglądem)</label>
+            <div style="display: flex; gap: 8px;">
+              <input
+                type="text"
+                id="inpSpeakersList"
+                class="input"
+                placeholder="Oddziel przecinkami, np. Moderator, Jan Nowak, Anna Kowalska"
+              />
+              <button id="btnSaveSpeakers" class="btn btn-primary btn-sm">Zapisz mówców</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ZAKŁADKA 4: PLANSZA PRZERWY / POWITANIA -->
+        <div id="tabBanner" class="tab-pane">
+          <div class="help-note">
+            Plansza pozwala wyświetlić na dużym ekranie estetyczny tytuł debaty przed rozpoczęciem wydarzenia lub komunikat o przerwie (zamiast napisów tłumaczenia).
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">Główny tytuł planszy (EN / PL)</label>
+            <input
+              type="text"
+              id="inpBannerTitle"
+              class="input"
+              placeholder="np. WELCOME TO THE PANEL DEBATE"
+            />
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">Podtytuł / informacja dodatkowa</label>
+            <input
+              type="text"
+              id="inpBannerSubtitle"
+              class="input"
+              placeholder="np. Live English Translation — Starting Shortly"
+            />
+          </div>
+
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button id="btnToggleBanner" class="btn btn-primary">
+              🪧 Wyświetl planszę na ekranie prezentacji
+            </button>
+            <button class="btn btn-outline btn-sm" data-banner-preset="welcome">
+              Preset: Powitanie (Welcome)
+            </button>
+            <button class="btn btn-outline btn-sm" data-banner-preset="break">
+              Preset: Przerwa (Short Break)
+            </button>
+            <button class="btn btn-outline btn-sm" data-banner-preset="qa">
+              Preset: Sesja Q&A
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script type="module" src="operator.js"></script>
+</body>
+</html>

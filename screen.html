@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ekran Prezentacji — Debate Live Translator (EN)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800;900&family=JetBrains+Mono:wght@600;700;800&family=Montserrat:wght@600;700;800;900&family=Oswald:wght@600;700&family=Roboto:wght@700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body class="presentation-body" id="presentationBody">
+  <!-- Warstwa Tła (Kolor / Gradient / Obraz / Wideo / Green Screen) -->
+  <div class="stage-bg-layer" id="stageBgLayer">
+    <img id="stageBgImage" class="stage-bg-media hidden" alt="" />
+    <video id="stageBgVideo" class="stage-bg-media hidden" autoplay loop muted playsinline></video>
+    <div id="stageBgOverlay" class="stage-bg-overlay"></div>
+  </div>
+
+  <!-- Obszar bezpieczny (Safe Area z konfigurowalnymi marginesami) -->
+  <main class="stage-safe-area" id="stageSafeArea">
+    <!-- Opcjonalna plansza tytułowa / komunikat przerwy -->
+    <section id="stageCustomBanner" class="stage-custom-banner hidden">
+      <div class="banner-card" id="bannerCard">
+        <h1 id="bannerTitle" class="banner-title"></h1>
+        <p id="bannerSubtitle" class="banner-subtitle"></p>
+      </div>
+    </section>
+
+    <!-- Główny kontener napisów tłumaczenia -->
+    <section id="stageSubtitlesContainer" class="stage-subtitles-container">
+      <!-- Podpis aktualnego mówcy (opcjonalny) -->
+      <div id="stageSpeakerBadge" class="stage-speaker-badge hidden"></div>
+
+      <!-- Lista wypowiedzi (Teleprompter / Pojedyncze zdanie / Napisy dolne) -->
+      <div id="stageLinesWrapper" class="stage-lines-wrapper"></div>
+    </section>
+  </main>
+
+  <!-- Pływający pasek narzędzi ekranu (znika automatycznie po 2.5s bezruchu myszy) -->
+  <div id="stageFloatingHud" class="stage-floating-hud">
+    <span class="hud-hint">Dwuklik lub klawisz <b>F</b> = Pełny ekran</span>
+    <button id="btnToggleFullscreen" class="hud-btn" title="Przełącz pełny ekran (F)">
+      ⛶ Pełny ekran
+    </button>
+  </div>
+
+  <script type="module" src="screen.js"></script>
+</body>
+</html>

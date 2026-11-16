@@ -1,0 +1,3 @@
+msvc-runtime; sys_platform == 'win32'
+numpy>=1.26.0
+onnxruntime>=1.17.0
