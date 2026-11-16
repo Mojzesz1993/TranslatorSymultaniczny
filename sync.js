@@ -98,9 +98,45 @@ export const DEFAULT_LIVE_STATE = {
   ]
 };
 
+export const SUPPORTED_LANGUAGES = [
+  { code: 'pl', bcp47: 'pl-PL', namePl: 'Polski', nameEn: 'Polish' },
+  { code: 'en', bcp47: 'en-US', namePl: 'Angielski', nameEn: 'English' },
+  { code: 'de', bcp47: 'de-DE', namePl: 'Niemiecki', nameEn: 'German' },
+  { code: 'es', bcp47: 'es-ES', namePl: 'Hiszpański', nameEn: 'Spanish' },
+  { code: 'it', bcp47: 'it-IT', namePl: 'Włoski', nameEn: 'Italian' },
+  { code: 'hu', bcp47: 'hu-HU', namePl: 'Węgierski', nameEn: 'Hungarian' },
+  { code: 'fr', bcp47: 'fr-FR', namePl: 'Francuski', nameEn: 'French' },
+  { code: 'uk', bcp47: 'uk-UA', namePl: 'Ukraiński', nameEn: 'Ukrainian' },
+  { code: 'cs', bcp47: 'cs-CZ', namePl: 'Czeski', nameEn: 'Czech' },
+  { code: 'sk', bcp47: 'sk-SK', namePl: 'Słowacki', nameEn: 'Slovak' },
+  { code: 'pt', bcp47: 'pt-PT', namePl: 'Portugalski', nameEn: 'Portuguese' },
+  { code: 'nl', bcp47: 'nl-NL', namePl: 'Niderlandzki', nameEn: 'Dutch' },
+  { code: 'ro', bcp47: 'ro-RO', namePl: 'Rumuński', nameEn: 'Romanian' },
+  { code: 'sv', bcp47: 'sv-SE', namePl: 'Szwedzki', nameEn: 'Swedish' },
+  { code: 'nb', bcp47: 'nb-NO', namePl: 'Norweski', nameEn: 'Norwegian' },
+  { code: 'da', bcp47: 'da-DK', namePl: 'Duński', nameEn: 'Danish' },
+  { code: 'fi', bcp47: 'fi-FI', namePl: 'Fiński', nameEn: 'Finnish' },
+  { code: 'hr', bcp47: 'hr-HR', namePl: 'Chorwacki', nameEn: 'Croatian' },
+  { code: 'bg', bcp47: 'bg-BG', namePl: 'Bułgarski', nameEn: 'Bulgarian' },
+  { code: 'el', bcp47: 'el-GR', namePl: 'Grecki', nameEn: 'Greek' },
+  { code: 'tr', bcp47: 'tr-TR', namePl: 'Turecki', nameEn: 'Turkish' },
+  { code: 'ja', bcp47: 'ja-JP', namePl: 'Japoński', nameEn: 'Japanese' },
+  { code: 'ko', bcp47: 'ko-KR', namePl: 'Koreański', nameEn: 'Korean' },
+  { code: 'zh', bcp47: 'zh-CN', namePl: 'Chiński (Mandaryński)', nameEn: 'Chinese (Mandarin)' }
+];
+
+export function getLanguageInfo(code) {
+  if (code === 'auto') {
+    return { code: 'auto', bcp47: 'pl-PL', namePl: 'Auto-wykrywanie (Direct Audio)', nameEn: 'Auto-detected spoken language' };
+  }
+  return SUPPORTED_LANGUAGES.find((l) => l.code === code) || SUPPORTED_LANGUAGES[0];
+}
+
 export const DEFAULT_API_CONFIG = {
   geminiApiKey: '',
-  engineMode: 'hybrid', // 'hybrid' (Web Speech PL + Gemini Flash) | 'gemini-audio' (Direct Audio -> Gemini) | 'demo'
+  sourceLang: 'pl',
+  targetLang: 'en',
+  engineMode: 'hybrid', // 'hybrid' (Web Speech + Gemini Flash) | 'gemini-audio' (Direct Audio -> Gemini) | 'demo'
   geminiModel: 'gemini-flash-latest',
   audioDeviceId: 'default',
   draftIntervalMs: 2000,       // Jak często tłumaczyć Live Draft w trakcie długiego zdania

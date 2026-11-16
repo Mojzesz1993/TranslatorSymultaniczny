@@ -223,12 +223,14 @@ class BaseTranslatorHandler(SimpleHTTPRequestHandler):
         if path == "/api/translate-fallback":
             try:
                 body = json.loads(raw_body.decode("utf-8"))
-                text_pl = (body.get("text") or "").strip()
-                if not text_pl:
+                text_src = (body.get("text") or "").strip()
+                sl = (body.get("sl") or "pl").strip()
+                tl = (body.get("tl") or "en").strip()
+                if not text_src:
                     self._send_json(200, {"ok": True, "en": ""})
                 else:
-                    q = urllib.parse.quote(text_pl)
-                    gtx_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=pl&tl=en&dt=t&q={q}"
+                    q = urllib.parse.quote(text_src)
+                    gtx_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={urllib.parse.quote(sl)}&tl={urllib.parse.quote(tl)}&dt=t&q={q}"
                     req = urllib.request.Request(gtx_url, headers={"User-Agent": "Mozilla/5.0"})
                     with urllib.request.urlopen(req, timeout=4) as r:
                         arr = json.loads(r.read().decode("utf-8"))

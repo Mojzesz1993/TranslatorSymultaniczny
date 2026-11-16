@@ -9,7 +9,9 @@ import {
   SyncManager,
   saveBackgroundMedia,
   loadBackgroundMedia,
-  DEFAULT_SETTINGS
+  DEFAULT_SETTINGS,
+  SUPPORTED_LANGUAGES,
+  getLanguageInfo
 } from './sync.js';
 import { renderStageDOM } from './screen.js';
 import { DebateTranslatorEngine } from './translator-engine.js';
@@ -713,6 +715,10 @@ function bindEngineAndContextControls() {
   const cfg = sync.apiConfig;
 
   const inpGeminiKey = document.getElementById('inpGeminiKey');
+  const selSourceLang = document.getElementById('selSourceLang');
+  const selTargetLang = document.getElementById('selTargetLang');
+  const btnSwapLanguages = document.getElementById('btnSwapLanguages');
+  const langAutoHint = document.getElementById('langAutoHint');
   const selEngineMode = document.getElementById('selEngineMode');
   const selGeminiModel = document.getElementById('selGeminiModel');
   const selAudioDevice = document.getElementById('selAudioDevice');
@@ -722,6 +728,82 @@ function bindEngineAndContextControls() {
   const txtDebateTopic = document.getElementById('txtDebateTopic');
   const txtGlossary = document.getElementById('txtGlossary');
   const inpSpeakersList = document.getElementById('inpSpeakersList');
+
+  function populateLanguageSelects() {
+    if (!selSourceLang || !selTargetLang) return;
+    selSourceLang.innerHTML = '';
+    const autoOpt = document.createElement('option');
+    autoOpt.value = 'auto';
+    autoOpt.textContent = '✨ Auto-wykrywanie mowy (Tryb Direct Audio Gemini)';
+    selSourceLang.appendChild(autoOpt);
+
+    selTargetLang.innerHTML = '';
+    SUPPORTED_LANGUAGES.forEach((lang) => {
+      const optSrc = document.createElement('option');
+      optSrc.value = lang.code;
+      optSrc.textContent = `${lang.namePl} (${lang.code.toUpperCase()})`;
+      selSourceLang.appendChild(optSrc);
+
+      const optTgt = document.createElement('option');
+      optTgt.value = lang.code;
+      optTgt.textContent = `${lang.namePl} (${lang.code.toUpperCase()})`;
+      selTargetLang.appendChild(optTgt);
+    });
+
+    selSourceLang.value = cfg.sourceLang || 'pl';
+    selTargetLang.value = cfg.targetLang || 'en';
+  }
+
+  function updateLanguageLabels() {
+    const sCode = sync.apiConfig.sourceLang || 'pl';
+    const tCode = sync.apiConfig.targetLang || 'en';
+    const sInfo = getLanguageInfo(sCode);
+    const tInfo = getLanguageInfo(tCode);
+    const sUpper = sCode === 'auto' ? 'AUTO' : sCode.toUpperCase();
+    const tUpper = tCode.toUpperCase();
+
+    const badge = document.getElementById('opLangPairBadge');
+    const sub = document.getElementById('opBrandSub');
+    const srcLbl = document.getElementById('lblSourceDraftTitle');
+    const tgtLbl = document.getElementById('lblTargetDraftTitle');
+
+    if (badge) badge.textContent = `${sUpper}▸${tUpper}`;
+    if (sub) sub.textContent = `Tłumaczenie symultaniczne audio ${sInfo.namePl} ➔ napisy ${tInfo.namePl} na żywo`;
+    if (srcLbl) srcLbl.textContent = `🎙 Sczytywana mowa z mikrofonu (${sUpper}):`;
+    if (tgtLbl) tgtLbl.textContent = `💬 Ostatnie gotowe tłumaczenie (${tUpper}):`;
+    if (langAutoHint) langAutoHint.classList.toggle('hidden', sCode !== 'auto');
+  }
+
+  populateLanguageSelects();
+  updateLanguageLabels();
+
+  function handleLanguagePairChange() {
+    const src = selSourceLang.value;
+    const tgt = selTargetLang.value;
+    const updates = { sourceLang: src, targetLang: tgt };
+    if (src === 'auto' && sync.apiConfig.engineMode === 'hybrid') {
+      updates.engineMode = 'gemini-audio';
+      selEngineMode.value = 'gemini-audio';
+    }
+    sync.saveApiConfig(updates);
+    updateLanguageLabels();
+    updateModeBadges();
+    if (engine.isRunning) {
+      engine.stop();
+      setTimeout(() => engine.start(), 220);
+    }
+  }
+
+  selSourceLang?.addEventListener('change', handleLanguagePairChange);
+  selTargetLang?.addEventListener('change', handleLanguagePairChange);
+  btnSwapLanguages?.addEventListener('click', () => {
+    const curSrc = selSourceLang.value;
+    const curTgt = selTargetLang.value;
+    if (curSrc === 'auto') return;
+    selSourceLang.value = curTgt;
+    selTargetLang.value = curSrc;
+    handleLanguagePairChange();
+  });
 
   inpGeminiKey.value = cfg.geminiApiKey || '';
   selEngineMode.value = cfg.engineMode || 'hybrid';
@@ -806,7 +888,13 @@ function bindEngineAndContextControls() {
   });
 
   selEngineMode.addEventListener('change', () => {
-    sync.saveApiConfig({ engineMode: selEngineMode.value });
+    const updates = { engineMode: selEngineMode.value };
+    if (selEngineMode.value === 'hybrid' && sync.apiConfig.sourceLang === 'auto') {
+      updates.sourceLang = 'pl';
+      if (selSourceLang) selSourceLang.value = 'pl';
+    }
+    sync.saveApiConfig(updates);
+    updateLanguageLabels();
     updateModeBadges();
     if (engine.isRunning) {
       engine.stop();

@@ -1,11 +1,13 @@
+import { getLanguageInfo } from './sync.js';
+
 /**
  * translator-engine.js
- * Silnik rozpoznawania mowy (PL), analizy sygnału audio (VU-Meter + VAD)
- * oraz tłumaczenia kontekstowego na żywo (PL -> EN) przez Google Gemini API.
+ * Silnik rozpoznawania mowy (wielojęzyczny), analizy sygnału audio (VU-Meter + VAD)
+ * oraz tłumaczenia kontekstowego na żywo (dowolna para języków) przez Google Gemini API.
  *
  * Obsługiwane tryby:
- * 1. 'hybrid'       : Web Speech API (PL na żywo) + Gemini Flash (Live Draft + Final z kontekstem)
- * 2. 'gemini-audio' : Bezpośredni strumień Audio z wybranego wejścia -> Gemini Multimodal Audio (PL + EN)
+ * 1. 'hybrid'       : Web Speech API (wybrany język na żywo) + Gemini Flash (Live Draft + Final z kontekstem)
+ * 2. 'gemini-audio' : Bezpośredni strumień Audio z wybranego wejścia -> Gemini Multimodal Audio (obsługuje też Auto-wykrywanie języka)
  * 3. 'demo'         : Symulacja debaty na żywo (do testowania ekranu, tła i czcionek bez mikrofonu/klucza)
  */
 
@@ -424,7 +426,8 @@ export class DebateTranslatorEngine {
 
     this.committedWordsByIndex.clear();
     const recognition = new SpeechRec();
-    recognition.lang = 'pl-PL';
+    const srcLangInfo = getLanguageInfo(this.getApiConfig().sourceLang || 'pl');
+    recognition.lang = srcLangInfo.bcp47 || 'pl-PL';
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 5;
@@ -432,10 +435,13 @@ export class DebateTranslatorEngine {
     recognition.onstart = () => {
       if (!this.isRunning) return;
       this.lastSpeechResultTime = Date.now();
+      const cfg = this.getApiConfig();
+      const sCode = (cfg.sourceLang || 'pl').toUpperCase();
+      const tCode = (cfg.targetLang || 'en').toUpperCase();
       this.onStatusChange?.({
         state: this.isMuted ? 'muted' : 'running',
         mode: 'hybrid',
-        label: this.isMuted ? 'PAUZA / WYCISZONO' : 'NASŁUCHIWANIE NA ŻYWO (Hybryda: Web Speech PL + Gemini Flash)'
+        label: this.isMuted ? 'PAUZA / WYCISZONO' : `NASŁUCHIWANIE NA ŻYWO (Hybryda: Web Speech ${sCode} ➔ ${tCode})`
       });
     };
 
@@ -736,9 +742,12 @@ export class DebateTranslatorEngine {
       const recentContext = this.getRecentContext?.() || [];
 
       const systemPrompt = this.buildSystemInstruction(config, recentContext, true, lockedSpeaker);
+      const srcInfo = getLanguageInfo(config.sourceLang || 'pl');
+      const tgtInfo = getLanguageInfo(config.targetLang || 'en');
+      const srcLabel = config.sourceLang === 'auto' ? 'rozpoznany język z nagrania' : srcInfo.namePl;
       const userPrompt = isDraft
-        ? 'Spisz i przetłumacz dotychczasową wypowiedź z nagrania audio (język polski) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej. Zwróć JSON: {"pl": "rozpoznany tekst po polsku", "en": "tłumaczenie po angielsku"}. Jeśli w nagraniu jest wyłącznie cisza lub szum, zwróć {"pl": "", "en": ""}.'
-        : 'Spisz i przetłumacz wypowiedź z nagrania audio (język polski) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej. Zwróć wyłącznie JSON: {"pl": "dokładny tekst po polsku", "en": "tłumaczenie po angielsku"}. Jeśli w nagraniu nie ma mowy, zwróć {"pl": "", "en": ""}.';
+        ? `Spisz dotychczasową wypowiedź z nagrania audio (${srcLabel}) i przetłumacz ją na język: ${tgtInfo.namePl} (${tgtInfo.nameEn}) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej. Zwróć JSON: {"pl": "rozpoznany tekst źródłowy", "en": "tłumaczenie w języku ${tgtInfo.namePl}"}. Jeśli w nagraniu jest wyłącznie cisza lub szum, zwróć {"pl": "", "en": ""}.`
+        : `Spisz wypowiedź z nagrania audio (${srcLabel}) i przetłumacz ją na język: ${tgtInfo.namePl} (${tgtInfo.nameEn}) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej. Zwróć wyłącznie JSON: {"pl": "dokładny tekst źródłowy", "en": "tłumaczenie w języku ${tgtInfo.namePl}"}. Jeśli w nagraniu nie ma mowy, zwróć {"pl": "", "en": ""}.`;
 
       const model = config.geminiModel || 'gemini-flash-latest';
       const data = await this.callGeminiWithAutoFallback(config.geminiApiKey.trim(), model, {
@@ -880,13 +889,17 @@ export class DebateTranslatorEngine {
       ? `\nAlternatywne hipotezy z rozpoznawania mowy:\n- ${altTranscripts.slice(0, 4).join('\n- ')}`
       : '';
 
-    const prompt = `Załączone nagranie to jedna wypowiedź z polskiej debaty${speakerName ? ` (mówi: ${speakerName})` : ''}.
+    const srcInfo = getLanguageInfo(config.sourceLang || 'pl');
+    const tgtInfo = getLanguageInfo(config.targetLang || 'en');
+    const srcLabel = config.sourceLang === 'auto' ? 'język mówiony z nagrania' : srcInfo.namePl;
+
+    const prompt = `Załączone nagranie to jedna wypowiedź z debaty (${srcLabel} ➔ ${tgtInfo.namePl})${speakerName ? ` (mówi: ${speakerName})` : ''}.
 Roboczy zapis z automatycznego rozpoznawania mowy (może zawierać przesłyszane słowa, brak interpunkcji):
 "${asrText}"${alts}
 
 ZADANIE:
-1. "pl": wiernie spisz po polsku to, co faktycznie słychać w nagraniu. Zapis roboczy traktuj jako podpowiedź — gdy nagranie brzmi inaczej, ufaj nagraniu. Nazwy własne zapisuj tak, jak brzmią (lub zgodnie ze słowniczkiem) — nigdy nie podmieniaj ich na inne marki czy produkty. Pomiń fragmenty, które ewidentnie należą do poprzedniego zdania (początek nagrania może zawierać jego końcówkę — patrz POPRZEDNIE WYPOWIEDZI). Pomiń wtrącenia typu "yyy", "eee". Nie dodawaj kropki, jeśli myśl jest urwana.
-2. "en": przetłumacz ten tekst zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej (zero halucynacji nazw, korekta błędów ASR, potoczyzmy jako wypełniacze, otwarta struktura urwanych fragmentów, naturalny konwersacyjny ton).
+1. "pl": wiernie spisz w języku źródłowym (${srcLabel}) to, co faktycznie słychać w nagraniu. Zapis roboczy traktuj jako podpowiedź — gdy nagranie brzmi inaczej, ufaj nagraniu. Nazwy własne zapisuj tak, jak brzmią (lub zgodnie ze słowniczkiem) — nigdy nie podmieniaj ich na inne marki czy produkty. Pomiń fragmenty, które ewidentnie należą do poprzedniego zdania (początek nagrania może zawierać jego końcówkę — patrz [KONTEKST]). Pomiń wtrącenia zawahania ("yyy", "eee", "uhm"). Nie dodawaj kropki, jeśli myśl jest urwana.
+2. "en": przetłumacz ten tekst na język ${tgtInfo.namePl} (${tgtInfo.nameEn}) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej (zero halucynacji nazw, korekta błędów ASR, wypełniacze mowy potocznej, otwarta struktura urwanych fragmentów, naturalny konwersacyjny ton).
 Jeśli nagranie jest nieczytelne, oprzyj się na zapisie roboczym.`;
 
     const data = await this.callGeminiWithAutoFallback(apiKey, config.geminiModel || 'gemini-flash-latest', {
@@ -952,12 +965,16 @@ Jeśli nagranie jest nieczytelne, oprzyj się na zapisie roboczym.`;
       ? `\nAlternatywne hipotezy akustyczne z mikrofonu (jeśli w głównym tekście słowo brzmi nielogicznie lub zostało przekręcone fonetycznie, użyj właściwego słowa z poniższych hipotez):\n- ${altTranscripts.slice(0, 4).join('\n- ')}`
       : '';
 
-    const prompt = isDraft
-      ? `Przetłumacz symultanicznie na żywo poniższy fragment wypowiedzi z debaty (PL -> EN) na naturalny, profesjonalny, konferencyjny język angielski. Zwróć wyłącznie sam tekst po angielsku:\n\n${polishText}`
-      : `Przetłumacz poniższy fragment wypowiedzi z polskiej debaty na angielski zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej (zero halucynacji nazw, korekta błędów ASR, potoczyzmy jako wypełniacze, otwarta struktura urwanych fragmentów, naturalny konwersacyjny ton).
-Zwróć WYŁĄCZNIE gotowe tłumaczenie po angielsku (bez cudzysłowów i bez komentarzy).
+    const srcInfo = getLanguageInfo(config.sourceLang || 'pl');
+    const tgtInfo = getLanguageInfo(config.targetLang || 'en');
+    const srcLabel = config.sourceLang === 'auto' ? 'język źródłowy' : srcInfo.namePl;
 
-Fragment po polsku${speakerName ? ` (${speakerName})` : ''}:
+    const prompt = isDraft
+      ? `Przetłumacz symultanicznie na żywo poniższy fragment wypowiedzi (${srcLabel} -> ${tgtInfo.namePl} / ${tgtInfo.nameEn}) na naturalny, profesjonalny, konferencyjny język ${tgtInfo.namePl}. Zwróć wyłącznie sam przetłumaczony tekst:\n\n${polishText}`
+      : `Przetłumacz poniższy fragment wypowiedzi (${srcLabel} -> ${tgtInfo.namePl} / ${tgtInfo.nameEn}) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej (zero halucynacji nazw, korekta błędów ASR, naturalna adaptacja mowy potocznej, otwarta struktura urwanych fragmentów).
+Zwróć WYŁĄCZNIE gotowe tłumaczenie w języku docelowym: ${tgtInfo.namePl} (${tgtInfo.nameEn}) — bez cudzysłowów i bez komentarzy.
+
+Fragment źródłowy${speakerName ? ` (${speakerName})` : ''}:
 ${polishText}${altsBlock}`;
 
     const model = config.geminiModel || 'gemini-flash-latest';
@@ -1002,13 +1019,16 @@ ${polishText}${altsBlock}`;
   async fallbackTranslatePlToEn(polishText) {
     const clean = (polishText || '').trim();
     if (!clean) return '';
+    const config = this.getApiConfig();
+    const sl = config.sourceLang || 'pl';
+    const tl = config.targetLang || 'en';
 
     // 1. Próba przez lokalny serwer Pythona (/api/translate-fallback)
     try {
       const res = await fetch('/api/translate-fallback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: clean })
+        body: JSON.stringify({ text: clean, sl, tl })
       });
       if (res.ok) {
         const data = await res.json();
@@ -1018,7 +1038,7 @@ ${polishText}${altsBlock}`;
 
     // 2. Bezpośredni fallback z przeglądarki
     try {
-      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=pl&tl=en&dt=t&q=${encodeURIComponent(clean)}`;
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(sl)}&tl=${encodeURIComponent(tl)}&dt=t&q=${encodeURIComponent(clean)}`;
       const res = await fetch(url);
       if (res.ok) {
         const arr = await res.json();
@@ -1179,40 +1199,63 @@ ${polishText}${altsBlock}`;
   }
 
   buildSystemInstruction(config, recentContext = [], isAudio = false, speakerName = '') {
+    const srcCode = config.sourceLang || 'pl';
+    const tgtCode = config.targetLang || 'en';
+    const srcInfo = getLanguageInfo(srcCode);
+    const tgtInfo = getLanguageInfo(tgtCode);
+    const isPolishSource = srcCode === 'pl';
+
     const contextLines = recentContext
       .slice(-6)
       .map((item) => {
         const spk = item.speaker ? `[${item.speaker}] ` : '';
-        return `- ${spk}PL: ${item.pl}\n  EN: ${item.en}`;
+        return `- ${spk}SRC: ${item.pl}\n  TGT: ${item.en}`;
       })
       .join('\n');
 
+    const srcDesc = srcCode === 'auto'
+      ? 'dowolnego wykrytego języka mówionego'
+      : `języka ${srcInfo.namePl} (${srcInfo.nameEn})`;
+
+    const polishSpecificAsr = isPolishSource
+      ? [
+          '2. ADAPTACJA SLANGU I KOREKTA ASR (IT CONTEXT): Zawsze tłumacz intencję techniczną opartą o logikę branżową oraz [SŁOWNIK KONTEKSTOWY]. Naprawiaj błędy fonetyczne ASR przed tłumaczeniem. Na przykład:',
+          '   - "rysiem" / "rys" w kontekście wdrożeń -> "release" (nie "lynx")',
+          '   - "intuicja" w kontekście zarządzania urządzeniami -> "Intune"',
+          '   - "obrońca" w kontekście bezpieczeństwa -> "Defender"',
+          '   - "w obozie" / "ażur" w kontekście chmury -> "Azure"',
+          '   - "Lecimy z tym koksem" -> "Let\'s get to work" / "Let\'s get down to business"',
+          '   - Slang oceniający ("patologia", "przejebana sprawa", "rzeźba", "druciarstwo") w odniesieniu do projektu lub podatności tłumacz jako "massive mess", "complete disaster" lub "awful workaround" (lub odpowiednik w języku docelowym). Zachowaj emocjonalny wydźwięk, unikając terminologii medycznej (nigdy nie używaj słowa "pathology").',
+          '3. OCHRONA TERMINOLOGII IT: Zachowuj w oryginale akronimy i nazwy własne (np. XDR, PHP, Linux, Entra ID). Rozpoznawaj polskie końcówki deklinacyjne dołączone do skrótów (np. "MDM-ów" -> "MDMs", "XDR-ami" -> "XDRs") i konwertuj je na poprawną formę w języku docelowym.',
+          '5. POLSKIE WYPEŁNIACZE I OTWARTA STRUKTURA: Ignoruj polskie wypełniacze ("no", "także", "jakby" traktuj jako pauzy myślowe lub pomijaj). Jeśli fragment uciął się w połowie, pozostaw otwartą strukturę gramatyczną – nie stawiaj kropki.'
+        ]
+      : [
+          '2. ADAPTACJA SLANGU I KOREKTA ASR (IT CONTEXT): Jeśli transkrypcja zawiera błędy ze słyszenia w języku źródłowym (zniekształcone terminy IT, nazwy narzędzi lub marek), użyj logiki branżowej i [SŁOWNIK KONTEKSTOWY], aby odtworzyć właściwy sens przed tłumaczeniem. Nie tłumacz dosłownie absurdalnych błędów rozpoznawania mowy.',
+          '3. OCHRONA TERMINOLOGII IT: Zachowuj w oryginale akronimy i nazwy własne (np. XDR, PHP, Linux, Entra ID, Azure, Intune, Defender) z poprawną odmianą w języku docelowym.',
+          '5. WYPEŁNIACZE MOWY POTOCZNEJ I OTWARTA STRUKTURA: Pomijaj lub naturalnie redukuj typowe wypełniacze pauz myślowych w języku źródłowym (np. "also", "ähm", "euh", "bueno", "allora", "szóval", "you know"). Jeśli fragment uciął się w połowie, pozostaw otwartą strukturę gramatyczną – nie stawiaj kropki.'
+        ];
+
     return [
-      'Jesteś zaawansowanym tłumaczem symultanicznym działającym w aplikacji w czasie rzeczywistym. Otrzymujesz [KONTEKST] (poprzednie zdania) oraz tekst [DO PRZETŁUMACZENIA] (bieżący fragment z transkrypcji ASR). Twoim zadaniem jest przetłumaczenie tekstu na naturalny, płynny język angielski.',
+      `Jesteś zaawansowanym tłumaczem symultanicznym działającym w aplikacji w czasie rzeczywistym. Otrzymujesz [KONTEKST] (poprzednie zdania) oraz tekst [DO PRZETŁUMACZENIA] z ${srcDesc}. Twoim zadaniem jest przetłumaczenie tekstu na naturalny, płynny język ${tgtInfo.namePl} (${tgtInfo.nameEn}).`,
       '',
       'DOMENA: Cyberbezpieczeństwo, Administracja Systemami (Linux, Windows), Cloud Computing (Azure), nowinki technologiczne oraz ogólna debata biznesowa.',
       '',
       'Bezwzględnie stosuj się do poniższych reguł:',
-      '1. FILTR SZUMU (NOISE REDUCTION & ZERO TOLERANCE DLA POWTÓRZEŃ): Traktuj wszelkie jąkanie, zacięcia i powtórzenia słów lub całych fraz w tekście polskim jako BŁĄD SYSTEMU NASŁUCHOWEGO (szum). Twoim zadaniem jest bezwzględne odfiltrowanie tego szumu. Jeśli na wejściu masz "ile ile jeszcze", dla Ciebie prawdziwym wejściem jest tylko "ile jeszcze". NIGDY, pod żadnym pozorem, nie generuj powtórzeń w języku angielskim ("how many how many", "that would make that would make", "that that", "seeing seeing"). Wygenerowanie powtórzenia łamie podstawową dyrektywę systemową. Redukuj też rozwlekłe emfazy ("nikt nie wie żaden nie wie" -> "no one knows").',
-      '2. ADAPTACJA SLANGU I KOREKTA ASR (IT CONTEXT): Zawsze tłumacz intencję techniczną opartą o logikę branżową oraz [SŁOWNIK KONTEKSTOWY]. Naprawiaj błędy fonetyczne ASR przed tłumaczeniem. Na przykład:',
-      '   - "rysiem" / "rys" w kontekście wdrożeń -> "release" (nie "lynx")',
-      '   - "intuicja" w kontekście zarządzania urządzeniami -> "Intune"',
-      '   - "obrońca" w kontekście bezpieczeństwa -> "Defender"',
-      '   - "w obozie" / "ażur" w kontekście chmury -> "Azure"',
-      '   - "Lecimy z tym koksem" -> "Let\'s get to work" / "Let\'s get down to business"',
-      '   - Slang oceniający ("patologia", "przejebana sprawa", "rzeźba", "druciarstwo") w odniesieniu do projektu lub podatności tłumacz jako "massive mess", "complete disaster" lub "awful workaround". Zachowaj emocjonalny wydźwięk, unikając dosłownej rynsztokowości i terminologii medycznej (nigdy nie używaj słowa "pathology").',
-      '3. OCHRONA TERMINOLOGII IT: Zachowuj w oryginale akronimy i nazwy własne (np. XDR, PHP, Linux, Entra ID). Rozpoznawaj polskie końcówki deklinacyjne dołączone do skrótów (np. "MDM-ów" -> "MDMs", "XDR-ami" -> "XDRs") i konwertuj je na poprawną angielską liczbę mnogą.',
-      '4. ROLA KONTEKSTU (SLIDING WINDOW): [KONTEKST] służy WYŁĄCZNIE do spójności gramatycznej, prawidłowego doboru zaimków (it/he/they) i zrozumienia bieżącego wątku. Pod żadnym pozorem NIE tłumacz ponownie treści znajdujących się w [KONTEKŚCIE].',
-      '5. POLSKIE WYPEŁNIACZE I OTWARTA STRUKTURA: Ignoruj polskie wypełniacze ("no", "także", "jakby" traktuj jako pauzy myślowe lub pomijaj, nie tłumacz "także" jako "as well"). Jeśli fragment uciął się w połowie, pozostaw otwartą strukturę gramatyczną, gotową na przyjęcie kolejnego słowa – nie stawiaj kropki.',
-      '6. ZAKRES IT JEST TYLKO POMOCNICZY: Używaj logiki branży IT do korekty błędów ASR TYLKO wtedy, gdy polskie słowo ewidentnie nie ma sensu. Zwykłe potoczne słowa (np. "potłumaczmy") tłumacz normalnie. Nie wymyślaj na siłę terminów technicznych (jak "troubleshoot"), gdy z kontekstu wynika luźna rozmowa.',
+      `1. FILTR SZUMU (NOISE REDUCTION & ZERO TOLERANCE DLA POWTÓRZEŃ): Traktuj wszelkie jąkanie, zacięcia i powtórzenia słów lub całych fraz w tekście źródłowym jako BŁĄD SYSTEMU NASŁUCHOWEGO (szum). Twoim zadaniem jest bezwzględne odfiltrowanie tego szumu. NIGDY, pod żadnym pozorem, nie generuj powtórzeń w języku docelowym (${tgtInfo.namePl}). Redukuj też rozwlekłe emfazy do zwięzłej esencji przekazu.`,
+      polishSpecificAsr[0],
+      ...(isPolishSource ? polishSpecificAsr.slice(1, 7) : []),
+      polishSpecificAsr[isPolishSource ? 7 : 1],
+      '4. ROLA KONTEKSTU (SLIDING WINDOW): [KONTEKST] służy WYŁĄCZNIE do spójności gramatycznej, prawidłowego doboru zaimków i zrozumienia bieżącego wątku. Pod żadnym pozorem NIE tłumacz ponownie treści znajdujących się w [KONTEKŚCIE].',
+      polishSpecificAsr[isPolishSource ? 8 : 2],
+      '6. ZAKRES IT JEST TYLKO POMOCNICZY: Używaj logiki branży IT do korekty błędów ASR TYLKO wtedy, gdy słowo w transkrypcji ewidentnie nie ma sensu. Zwykłe potoczne słowa tłumacz normalnie. Nie wymyślaj na siłę terminów technicznych, gdy z kontekstu wynika luźna rozmowa.',
       speakerName ? `\nAKTUALNIE PRZEMAWIA: ${speakerName}` : '',
       config.debateTopic ? `\nTEMAT I KONTEKST DEBATY:\n${config.debateTopic.trim()}` : '',
       config.currentSlideContext ? `\n[AKTUALNY SLAJD PREZENTACJI] (terminologia i pojęcia widoczne teraz na ekranie — używaj do poprawy nazw własnych i akronimów):\n${config.currentSlideContext.trim()}` : '',
       config.glossary ? `\n[SŁOWNIK KONTEKSTOWY] (pojęcia, nazwiska, narzędzia — stosuj bezwzględnie):\n${config.glossary.trim()}` : '',
       contextLines ? `\n[KONTEKST] (poprzednie wypowiedzi — tylko do spójności, NIE tłumacz ich ponownie!):\n${contextLines}` : '',
       isAudio
-        ? '\nOdpowiadaj wyłącznie poprawnym obiektem JSON o kluczach "pl" oraz "en".'
-        : '\nZwracaj wyłącznie sam przetłumaczony tekst w języku angielskim, bez żadnych dodatkowych wyjaśnień.'
+        ? `\nOdpowiadaj wyłącznie poprawnym obiektem JSON o kluczach "pl" (transkrypcja źródłowa) oraz "en" (tłumaczenie na język ${tgtInfo.namePl}).`
+        : `\nZwracaj wyłącznie sam przetłumaczony tekst w języku ${tgtInfo.namePl} (${tgtInfo.nameEn}), bez żadnych dodatkowych wyjaśnień.`
     ]
       .filter(Boolean)
       .join('\n');
