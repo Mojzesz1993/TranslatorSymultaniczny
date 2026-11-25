@@ -121,6 +121,8 @@ class SubtitleOverlayApp:
         pos_mode = pres_resp.get("subtitlePosition") or "bottom"
         font_scale = float(pres_resp.get("subtitleFontScale") or 0.85)
         opacity = float(pres_resp.get("subtitleOpacity") or 0.88)
+        area_h_pct = max(10.0, min(45.0, float(pres_resp.get("subtitleAreaHeightPct") or 22))) / 100.0
+        area_w_pct = max(50.0, min(100.0, float(pres_resp.get("subtitleAreaWidthPct") or 90))) / 100.0
 
         last_item = items[-1] if items else None
         en_text = (last_item.get("en") or "").strip() if last_item else ""
@@ -131,11 +133,17 @@ class SubtitleOverlayApp:
                 self.root.withdraw()
                 self.last_sig = "HIDDEN"
         else:
-            sig = f"{pos_mode}|{font_scale:.2f}|{opacity:.2f}|{speaker}|{en_text}"
+            sig = f"{pos_mode}|{font_scale:.2f}|{opacity:.2f}|{area_h_pct:.2f}|{area_w_pct:.2f}|{speaker}|{en_text}"
             if sig != self.last_sig:
                 self.last_sig = sig
                 self.root.deiconify()
-                y = self.pos_y_top if pos_mode == "top" else self.pos_y_bottom
+                self.bar_height = max(100, int(self.mon["height"] * area_h_pct))
+                self.bar_width = int(self.mon["width"] * area_w_pct)
+                self.pos_x = self.mon["left"] + (self.mon["width"] - self.bar_width) // 2
+                y_bottom = self.mon["top"] + self.mon["height"] - self.bar_height - int(self.mon["height"] * 0.03)
+                y_top = self.mon["top"] + int(self.mon["height"] * 0.03)
+                y = y_top if pos_mode == "top" else y_bottom
+                self.lbl_en.configure(wraplength=max(200, self.bar_width - 60))
                 self.root.geometry(f"{self.bar_width}x{self.bar_height}+{self.pos_x}+{y}")
                 try:
                     self.root.attributes("-alpha", max(0.35, min(0.98, opacity + 0.15)))

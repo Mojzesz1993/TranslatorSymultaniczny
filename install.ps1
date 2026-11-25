@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Continue"
 
@@ -7,10 +7,15 @@ Set-Location $AppDir
 
 Write-Host ""
 Write-Host "====================================================================" -ForegroundColor Cyan
-Write-Host "   INSTALATOR: Debate Live Translator (PL -> EN)                    " -ForegroundColor Cyan
+Write-Host "   INSTALATOR: Debate Live Translator (Live AI)                     " -ForegroundColor Cyan
 Write-Host "   Automatyczne wdrozenie na nowym laptopie (Windows 10 / 11)       " -ForegroundColor Cyan
 Write-Host "====================================================================" -ForegroundColor Cyan
 Write-Host ""
+
+function Test-PythonModules($PyExe, $ModulesExpr) {
+    cmd /c "`"$PyExe`" -c `"$ModulesExpr`" >nul 2>nul"
+    return ($LASTEXITCODE -eq 0)
+}
 
 function Find-WorkingPython {
     # Odswiez zmienna PATH z rejestru Windows (przydatne zaraz po instalacji Pythona)
@@ -19,6 +24,7 @@ function Find-WorkingPython {
     $env:Path    = "$UserPath;$MachinePath"
 
     $Candidates = @(
+        (Join-Path $AppDir ".venv\Scripts\python.exe"),
         "python",
         "$env:LocalAppData\Programs\Python\Python312\python.exe",
         "$env:LocalAppData\Programs\Python\Python311\python.exe",
@@ -35,11 +41,11 @@ function Find-WorkingPython {
             if (-not $resolved) { continue }
             $exePath = $resolved.Source
             if ($exePath -match "WindowsApps\\python") { continue }
-            $verCheck = & $exePath -c "import sys; print(sys.version_info[0], sys.version_info[1])"
+            $verCheck = & $exePath -c "import sys; print(sys.version_info[0], sys.version_info[1])" 2>$null
             if ($LASTEXITCODE -eq 0 -and "$verCheck".Trim() -match "^3 (10|11|12|13)") {
+                if (-not (Test-PythonModules $exePath "import tkinter")) { continue }
                 if (-not $FoundAny) { $FoundAny = $exePath }
-                cmd /c "`"$exePath`" -c `"import numpy, onnxruntime`" >nul 2>nul"
-                if ($LASTEXITCODE -eq 0) {
+                if (Test-PythonModules $exePath "import numpy, onnxruntime, pypdfium2, tkinter") {
                     return $exePath
                 }
             }
@@ -51,7 +57,7 @@ function Find-WorkingPython {
 }
 
 # 1. Sprawdzenie / instalacja środowiska Python 3.12
-Write-Host "[1/4] Sprawdzanie srodowiska Python 3..." -ForegroundColor Yellow
+Write-Host "[1/5] Sprawdzanie srodowiska Python 3 (z obsluga Tkinter)..." -ForegroundColor Yellow
 $PythonExe = Find-WorkingPython
 
 if (-not $PythonExe) {
@@ -86,9 +92,9 @@ if (-not $PythonExe) {
 $PyVersion = & $PythonExe --version 2>&1
 Write-Host "      [OK] Wykryto: $PyVersion ($PythonExe)" -ForegroundColor Green
 
-# 2. Sprawdzenie i instalacja bibliotek (numpy + onnxruntime + msvc-runtime)
+# 2. Sprawdzenie i instalacja bibliotek (numpy + onnxruntime + pypdfium2 + msvc-runtime)
 Write-Host ""
-Write-Host "[2/4] Sprawdzanie bibliotek AI, DSP oraz runtime C++ (numpy, onnxruntime, msvc-runtime)..." -ForegroundColor Yellow
+Write-Host "[2/5] Sprawdzanie bibliotek AI, PDF oraz runtime C++ (numpy, onnxruntime, pypdfium2, msvc-runtime)..." -ForegroundColor Yellow
 $TargetPython = $PythonExe
 
 function Sync-VcRedistDlls($PyExe) {
@@ -111,16 +117,15 @@ function Sync-VcRedistDlls($PyExe) {
 
 Sync-VcRedistDlls $TargetPython
 
-cmd /c "`"$TargetPython`" -c `"import numpy, onnxruntime`" >nul 2>nul"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "      -> Instalowanie bibliotek msvc-runtime, numpy oraz onnxruntime..." -ForegroundColor Magenta
+$RequiredImports = "import numpy, onnxruntime, pypdfium2, tkinter"
+if (-not (Test-PythonModules $TargetPython $RequiredImports)) {
+    Write-Host "      -> Instalowanie bibliotek z requirements.txt (msvc-runtime, numpy, onnxruntime, pypdfium2)..." -ForegroundColor Magenta
     & $TargetPython -m pip install --upgrade pip --quiet
     & $TargetPython -m pip install --upgrade msvc-runtime --quiet
     & $TargetPython -m pip install -r (Join-Path $AppDir "requirements.txt") --quiet
     Sync-VcRedistDlls $TargetPython
 
-    cmd /c "`"$TargetPython`" -c `"import numpy, onnxruntime`" >nul 2>nul"
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-PythonModules $TargetPython $RequiredImports)) {
         # Fallback do instalacji systemowego pakietu Microsoft Visual C++ Redistributable przez winget
         $WingetCmd = Get-Command winget -ErrorAction SilentlyContinue
         if ($WingetCmd) {
@@ -129,8 +134,7 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
 
-    cmd /c "`"$TargetPython`" -c `"import numpy, onnxruntime`" >nul 2>nul"
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-PythonModules $TargetPython $RequiredImports)) {
         # Fallback do .venv jesli globalny pip wymaga uprawnien
         $VenvDir    = Join-Path $AppDir ".venv"
         $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
@@ -144,22 +148,65 @@ if ($LASTEXITCODE -ne 0) {
         Sync-VcRedistDlls $TargetPython
     }
 }
-Write-Host "      [OK] Biblioteki numpy, onnxruntime oraz biblioteki DLL C++ sa gotowe." -ForegroundColor Green
+
+if (-not (Test-PythonModules $TargetPython $RequiredImports)) {
+    Write-Host "[BLAD] Nie udalo sie zainstalowac lub uruchomic wymaganych bibliotek (numpy, onnxruntime, pypdfium2, tkinter)." -ForegroundColor Red
+    Write-Host "       Sprawdz polaczenie z internetem i uruchom instalator ponownie." -ForegroundColor Red
+    exit 1
+}
+Write-Host "      [OK] Biblioteki numpy, onnxruntime, pypdfium2, tkinter oraz DLL C++ sa gotowe." -ForegroundColor Green
 
 # 3. Weryfikacja / pobranie modelu neuronowego WeSpeaker CAM++ ONNX
 Write-Host ""
-Write-Host "[3/4] Weryfikacja modelu biometrii glosu (WeSpeaker CAM++ ONNX)..." -ForegroundColor Yellow
-& $TargetPython -c "import neural_voice_id; neural_voice_id.get_ort_session()"
+Write-Host "[3/5] Weryfikacja modelu biometrii glosu (WeSpeaker CAM++ ONNX) i silnika PDF..." -ForegroundColor Yellow
+& $TargetPython -c "import neural_voice_id, pypdfium2, tkinter; neural_voice_id.get_ort_session()"
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[BLAD] Test modelu ONNX nie powiodl sie." -ForegroundColor Red
+    Write-Host "[BLAD] Test modelu ONNX lub silnika PDF nie powiodl sie." -ForegroundColor Red
     exit 1
 }
-Write-Host "      [OK] Silnik ONNX Runtime i model WeSpeaker CAM++ dzialaja poprawnie." -ForegroundColor Green
+Write-Host "      [OK] Silnik ONNX Runtime, model WeSpeaker CAM++ oraz silnik PDF (pypdfium2) dzialaja poprawnie." -ForegroundColor Green
 [System.IO.File]::WriteAllText((Join-Path $AppDir ".python_exe"), $TargetPython, [System.Text.Encoding]::ASCII)
 
-# 4. Utworzenie skrótu na Pulpicie
+# 4. Sprawdzenie opcjonalnej obslugi prezentacji PowerPoint (.ppt / .pptx)
 Write-Host ""
-Write-Host "[4/4] Tworzenie skrotu na Pulpicie..." -ForegroundColor Yellow
+Write-Host "[4/5] Sprawdzanie obslugi prezentacji PowerPoint (.ppt / .pptx)..." -ForegroundColor Yellow
+$HasPowerPoint = $false
+try {
+    $pptReg = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\POWERPNT.EXE" -ErrorAction SilentlyContinue
+    if ($pptReg -and $pptReg.'(default)' -and (Test-Path $pptReg.'(default)')) {
+        $HasPowerPoint = $true
+    }
+} catch {}
+
+$LibreOfficeExe = $null
+$sofficeCmd = Get-Command soffice -ErrorAction SilentlyContinue
+if ($sofficeCmd) {
+    $LibreOfficeExe = $sofficeCmd.Source
+} else {
+    foreach ($loPath in @(
+        "C:\Program Files\LibreOffice\program\soffice.exe",
+        "C:\Program Files (x86)\LibreOffice\program\soffice.exe"
+    )) {
+        if (Test-Path $loPath) {
+            $LibreOfficeExe = $loPath
+            break
+        }
+    }
+}
+
+if ($HasPowerPoint) {
+    Write-Host "      [OK] Wykryto Microsoft PowerPoint — prezentacje .ppt/.pptx oraz .pdf beda konwertowane lokalnie." -ForegroundColor Green
+} elseif ($LibreOfficeExe) {
+    Write-Host "      [OK] Wykryto LibreOffice ($LibreOfficeExe) — prezentacje .ppt/.pptx oraz .pdf beda konwertowane lokalnie." -ForegroundColor Green
+} else {
+    Write-Host "      [UWAGA] Nie wykryto Microsoft PowerPoint ani LibreOffice." -ForegroundColor Magenta
+    Write-Host "              Prezentacje .pdf dzialaja od razu (przez pypdfium2), ale pliki .ppt/.pptx" -ForegroundColor Gray
+    Write-Host "              wymagaja zainstalowanego Microsoft PowerPoint lub darmowego LibreOffice." -ForegroundColor Gray
+}
+
+# 5. Utworzenie skrótu na Pulpicie
+Write-Host ""
+Write-Host "[5/5] Tworzenie skrotu na Pulpicie..." -ForegroundColor Yellow
 try {
     $DesktopDir   = [Environment]::GetFolderPath("Desktop")
     $ShortcutPath = Join-Path $DesktopDir "Debate Live Translator.lnk"
@@ -167,7 +214,7 @@ try {
     $Shortcut     = $WshShell.CreateShortcut($ShortcutPath)
     $Shortcut.TargetPath       = Join-Path $AppDir "Uruchom_Translator.bat"
     $Shortcut.WorkingDirectory = $AppDir
-    $Shortcut.Description      = "Uruchom Debate Live Translator (PL -> EN)"
+    $Shortcut.Description      = "Uruchom Debate Live Translator (Live AI)"
     $Shortcut.IconLocation     = "shell32.dll,13"
     $Shortcut.Save()
     Write-Host "      [OK] Utworzono skrot na Pulpicie: Debate Live Translator" -ForegroundColor Green

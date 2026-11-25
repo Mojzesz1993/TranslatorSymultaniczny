@@ -9,7 +9,10 @@ Zapewnia:
 """
 
 import json
+import mimetypes
 import os
+import re
+import shutil
 import socket
 import sys
 import threading
@@ -21,14 +24,22 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from presentation_manager import (
     control_presentation,
     delete_presentation,
+    get_playlist,
     get_presentation_state,
     get_windows_monitors,
     list_presentations,
     load_presentation_meta,
     save_and_convert_presentation,
+    save_playlist,
     select_presentation,
     stop_overlay_process,
 )
+
+mimetypes.add_type("video/mp4", ".mp4")
+mimetypes.add_type("video/webm", ".webm")
+mimetypes.add_type("video/quicktime", ".mov")
+mimetypes.add_type("image/gif", ".gif")
+mimetypes.add_type("image/webp", ".webp")
 
 PORT = 8765
 PRESENTER_PORT = 8766
@@ -75,11 +86,72 @@ class BaseTranslatorHandler(SimpleHTTPRequestHandler):
         super().log_message(format, *args)
 
     def end_headers(self):
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        if getattr(self, "_allow_media_cache", False):
+            self.send_header("Cache-Control", "public, max-age=3600")
+        else:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-File-Name")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-File-Name, Range")
         super().end_headers()
+
+    def _serve_media_file_with_range(self, fs_path):
+        """Obsługuje strumieniowanie wideo/animacji z nagłówkami HTTP Range (206 Partial Content)."""
+        if not os.path.isfile(fs_path):
+            self.send_error(404, "File not found")
+            return
+        file_size = os.path.getsize(fs_path)
+        ctype = self.guess_type(fs_path)
+        range_header = self.headers.get("Range")
+        self._allow_media_cache = True
+
+        try:
+            with open(fs_path, "rb") as f:
+                if range_header:
+                    m = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
+                    if m:
+                        start_s, end_s = m.group(1), m.group(2)
+                        if start_s == "" and end_s != "":
+                            suffix_len = int(end_s)
+                            start = max(0, file_size - suffix_len)
+                            end = file_size - 1
+                        else:
+                            start = int(start_s) if start_s else 0
+                            end = int(end_s) if end_s else (file_size - 1)
+                        if file_size == 0 or start >= file_size or start > end:
+                            self.send_response(416)
+                            self.send_header("Content-Range", f"bytes */{file_size}")
+                            self.end_headers()
+                            return
+                        end = min(end, file_size - 1)
+                        chunk_len = end - start + 1
+                        self.send_response(206)
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Accept-Ranges", "bytes")
+                        self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                        self.send_header("Content-Length", str(chunk_len))
+                        self.end_headers()
+                        f.seek(start)
+                        remaining = chunk_len
+                        buf_size = 64 * 1024
+                        while remaining > 0:
+                            data = f.read(min(buf_size, remaining))
+                            if not data:
+                                break
+                            self.wfile.write(data)
+                            remaining -= len(data)
+                        return
+
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(file_size))
+                self.end_headers()
+                shutil.copyfileobj(f, self.wfile, length=64 * 1024)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        finally:
+            self._allow_media_cache = False
 
     def _send_json(self, status_code, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -130,6 +202,15 @@ class BaseTranslatorHandler(SimpleHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "presentations": list_presentations(),
+                "playlist": get_playlist(),
+                "state": get_presentation_state(),
+            })
+            return
+
+        if path == "/api/presentation/playlist":
+            self._send_json(200, {
+                "ok": True,
+                "playlist": get_playlist(),
                 "state": get_presentation_state(),
             })
             return
@@ -144,7 +225,14 @@ class BaseTranslatorHandler(SimpleHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "presentation": meta})
             return
 
-        return super().do_GET()
+        if path.startswith("/presentations/"):
+            fs_path = self.translate_path(self.path)
+            return self._serve_media_file_with_range(fs_path)
+
+        try:
+            return super().do_GET()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -182,11 +270,26 @@ class BaseTranslatorHandler(SimpleHTTPRequestHandler):
             try:
                 raw_name = self.headers.get("X-File-Name", "prezentacja.pptx")
                 file_name = urllib.parse.unquote(raw_name)
+                qs = urllib.parse.parse_qs(parsed.query)
+                activate_flag = (qs.get("activate") or ["1"])[0] != "0"
                 if not raw_body:
                     raise ValueError("Przesłano pusty plik.")
                 meta = save_and_convert_presentation(file_name, raw_body)
-                state, _ = select_presentation(meta["id"], activate=True)
+                if activate_flag:
+                    state, _ = select_presentation(meta["id"], activate=True)
+                else:
+                    state = get_presentation_state()
                 self._send_json(200, {"ok": True, "presentation": meta, "state": state})
+            except Exception as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/presentation/playlist":
+            try:
+                body = json.loads(raw_body.decode("utf-8"))
+                items = body.get("items", [])
+                playlist, state = save_playlist(items)
+                self._send_json(200, {"ok": True, "playlist": playlist, "state": state})
             except Exception as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
             return

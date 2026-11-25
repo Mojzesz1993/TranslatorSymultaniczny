@@ -94,6 +94,7 @@ export class DebateTranslatorEngine {
     this.audioRing = [];
     this.audioRingSamples = 0;
     this.outputChain = Promise.resolve();
+    this.pendingOutputCount = 0;
 
     // Tryb Demo
     this.demoTimer = null;
@@ -832,8 +833,8 @@ export class DebateTranslatorEngine {
   /**
    * Finalizacja zakończonego zdania.
    * 1. Wycina z bufora kołowego nagranie tego zdania i wysyła je do Gemini razem z tekstem z Chrome —
-   *    Gemini słyszy oryginał, poprawia przesłyszane słowa i tłumaczy (ścieżka główna).
-   * 2. Jeśli audio jest niedostępne / ciche albo zapytanie się nie powiedzie — tłumaczenie samego tekstu.
+   *    Gemini słyszy oryginał, poprawia przesłyszane słowa i tłumaczy (ścieżka główna najwyższej jakości).
+   * 2. Jeśli audio jest niedostępne / ciche albo zapytanie się nie powiedzie — tłumaczenie samego tekstu ze streamingiem SSE.
    * 3. Napisy są emitowane w kolejności wypowiedzi, nawet gdy odpowiedzi API wrócą w innej kolejności.
    */
   finalizePolishSegment(polishSentence, lastDraftEn = '', segmentId = null, lockedSpeaker = '', altTranscripts = []) {
@@ -847,6 +848,23 @@ export class DebateTranslatorEngine {
     this.lastSegmentEndMs = endMs;
     const audioPcm = this.sliceAudioRing(startMs, endMs);
 
+    const canStreamToLive = this.pendingOutputCount === 0;
+    this.pendingOutputCount += 1;
+
+    const onPartialText = (partialEn) => {
+      if (!canStreamToLive || !partialEn) return;
+      const cleaned = partialEn.trim().replace(/^["„”]+/, '');
+      if (cleaned) {
+        this.onDraftUpdate?.({
+          id: finalId,
+          pl: cleanPl,
+          en: cleaned,
+          speaker: lockedSpeaker,
+          isStreaming: true
+        });
+      }
+    };
+
     const resultPromise = (async () => {
       if (audioPcm && pcmRms(audioPcm) > 0.004) {
         try {
@@ -857,7 +875,7 @@ export class DebateTranslatorEngine {
         }
       }
       try {
-        const en = await this.translatePolishTextToEnglish(cleanPl, false, '', true, lockedSpeaker, altTranscripts);
+        const en = await this.translatePolishTextToEnglish(cleanPl, false, '', true, lockedSpeaker, altTranscripts, onPartialText);
         if (en && en.trim()) return { pl: cleanPl, en: en.trim() };
       } catch (_) {}
       const backupEn = await this.fallbackTranslatePlToEn(cleanPl);
@@ -871,7 +889,10 @@ export class DebateTranslatorEngine {
           this.onFinalSegment?.({ id: finalId, pl: result.pl, en: result.en, speaker: lockedSpeaker, isUpdate: false });
         }
       })
-      .catch((err) => console.warn('Segment output error:', err));
+      .catch((err) => console.warn('Segment output error:', err))
+      .finally(() => {
+        this.pendingOutputCount = Math.max(0, this.pendingOutputCount - 1);
+      });
   }
 
   /**
@@ -893,14 +914,14 @@ export class DebateTranslatorEngine {
     const tgtInfo = getLanguageInfo(config.targetLang || 'en');
     const srcLabel = config.sourceLang === 'auto' ? 'język mówiony z nagrania' : srcInfo.namePl;
 
-    const prompt = `Załączone nagranie to jedna wypowiedź z debaty (${srcLabel} ➔ ${tgtInfo.namePl})${speakerName ? ` (mówi: ${speakerName})` : ''}.
+    const prompt = `Załączone nagranie to jedna wypowiedź ze sceny (${srcLabel} ➔ ${tgtInfo.namePl})${speakerName ? ` (mówi: ${speakerName})` : ''}.
 Roboczy zapis z automatycznego rozpoznawania mowy (może zawierać przesłyszane słowa, brak interpunkcji):
 "${asrText}"${alts}
 
 ZADANIE:
-1. "pl": wiernie spisz w języku źródłowym (${srcLabel}) to, co faktycznie słychać w nagraniu. Zapis roboczy traktuj jako podpowiedź — gdy nagranie brzmi inaczej, ufaj nagraniu. Nazwy własne zapisuj tak, jak brzmią (lub zgodnie ze słowniczkiem) — nigdy nie podmieniaj ich na inne marki czy produkty. Pomiń fragmenty, które ewidentnie należą do poprzedniego zdania (początek nagrania może zawierać jego końcówkę — patrz [KONTEKST]). Pomiń wtrącenia zawahania ("yyy", "eee", "uhm"). Nie dodawaj kropki, jeśli myśl jest urwana.
-2. "en": przetłumacz ten tekst na język ${tgtInfo.namePl} (${tgtInfo.nameEn}) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej (zero halucynacji nazw, korekta błędów ASR, wypełniacze mowy potocznej, otwarta struktura urwanych fragmentów, naturalny konwersacyjny ton).
-Jeśli nagranie jest nieczytelne, oprzyj się na zapisie roboczym.`;
+1. "pl": wiernie spisz w języku źródłowym (${srcLabel}) to, co faktycznie słychać w nagraniu. Zapis roboczy traktuj wyłącznie jako podpowiedź — gdy nagranie brzmi inaczej, ufaj nagraniu. Imiona, nazwiska, nazwy firm i kategorii zapisuj poprawnie (zgodnie ze słowniczkiem lub slajdem) — nigdy nie podmieniaj słów na przypadkowe marki czy terminy techniczne. Pomiń fragmenty należące do poprzedniego zdania (patrz [KONTEKST]) oraz dźwięki zawahania ("yyy", "eee", "uhm"). Nie dodawaj kropki, jeśli myśl jest urwana w połowie.
+2. "en": przetłumacz wypowiedź na naturalny, idiomatyczny język ${tgtInfo.namePl} (${tgtInfo.nameEn}) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej — oddając sens, emocje i styl mówcy (przemówienie biznesowe, gala rozdania nagród, wystąpienie motywacyjne lub rozmowa na scenie), bez dosłownych kalek składniowych.
+Jeśli nagranie jest zbyt ciche lub nieczytelne, oprzyj się na zapisie roboczym i kontekście.`;
 
     const data = await this.callGeminiWithAutoFallback(apiKey, config.geminiModel || 'gemini-flash-latest', {
       systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -947,7 +968,8 @@ Jeśli nagranie jest nieczytelne, oprzyj się na zapisie roboczym.`;
     previousDraftEn = '',
     allowBackup = true,
     speakerName = '',
-    altTranscripts = []
+    altTranscripts = [],
+    onPartial = null
   ) {
     const config = this.getApiConfig();
     const apiKey = (config.geminiApiKey || '').trim();
@@ -970,37 +992,44 @@ Jeśli nagranie jest nieczytelne, oprzyj się na zapisie roboczym.`;
     const srcLabel = config.sourceLang === 'auto' ? 'język źródłowy' : srcInfo.namePl;
 
     const prompt = isDraft
-      ? `Przetłumacz symultanicznie na żywo poniższy fragment wypowiedzi (${srcLabel} -> ${tgtInfo.namePl} / ${tgtInfo.nameEn}) na naturalny, profesjonalny, konferencyjny język ${tgtInfo.namePl}. Zwróć wyłącznie sam przetłumaczony tekst:\n\n${polishText}`
-      : `Przetłumacz poniższy fragment wypowiedzi (${srcLabel} -> ${tgtInfo.namePl} / ${tgtInfo.nameEn}) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej (zero halucynacji nazw, korekta błędów ASR, naturalna adaptacja mowy potocznej, otwarta struktura urwanych fragmentów).
+      ? `Przetłumacz symultanicznie na żywo poniższy fragment wypowiedzi (${srcLabel} -> ${tgtInfo.namePl} / ${tgtInfo.nameEn}) na naturalny, płynny język ${tgtInfo.namePl}. Zwróć wyłącznie sam przetłumaczony tekst:\n\n${polishText}`
+      : `Przetłumacz poniższy fragment wypowiedzi scenicznej (${srcLabel} -> ${tgtInfo.namePl} / ${tgtInfo.nameEn}) zgodnie z ZASADAMI TŁUMACZENIA z instrukcji systemowej (naturalny szyk i idiomatyka zamiast kalki słowo w słowo, wierne oddanie tonu i emocji mówcy, korekta oczywistych błędów ASR z kontekstu, otwarta struktura urwanych myśli).
 Zwróć WYŁĄCZNIE gotowe tłumaczenie w języku docelowym: ${tgtInfo.namePl} (${tgtInfo.nameEn}) — bez cudzysłowów i bez komentarzy.
 
 Fragment źródłowy${speakerName ? ` (${speakerName})` : ''}:
 ${polishText}${altsBlock}`;
 
     const model = config.geminiModel || 'gemini-flash-latest';
-    try {
-      const data = await this.callGeminiWithAutoFallback(apiKey, model, {
-        systemInstruction: {
-          parts: [{ text: systemInstruction }]
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.15,
-          maxOutputTokens: 512,
-          thinkingConfig: { thinkingBudget: 0 }
+    const requestBody = {
+      systemInstruction: {
+        parts: [{ text: systemInstruction }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }]
         }
-      });
+      ],
+      generationConfig: {
+        temperature: 0.15,
+        maxOutputTokens: 512,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
+    };
 
-      const parts = data?.candidates?.[0]?.content?.parts || [];
-      const textPart = parts.find((p) => typeof p.text === 'string' && !p.thought) || parts[0];
-      const output = textPart?.text || '';
-      const cleaned = output.trim().replace(/^["„”]+|["„”]+$/g, '');
-      if (cleaned) return cleaned;
+    try {
+      if (typeof onPartial === 'function') {
+        const streamed = await this.callGeminiStreamWithAutoFallback(apiKey, model, requestBody, onPartial);
+        const cleanedStream = (streamed || '').trim().replace(/^["„”]+|["„”]+$/g, '');
+        if (cleanedStream) return cleanedStream;
+      } else {
+        const data = await this.callGeminiWithAutoFallback(apiKey, model, requestBody);
+        const parts = data?.candidates?.[0]?.content?.parts || [];
+        const textPart = parts.find((p) => typeof p.text === 'string' && !p.thought) || parts[0];
+        const output = textPart?.text || '';
+        const cleaned = output.trim().replace(/^["„”]+|["„”]+$/g, '');
+        if (cleaned) return cleaned;
+      }
     } catch (err) {
       if (!allowBackup) throw err;
       console.warn('Gemini limit/timeout — używam tłumaczenia zapasowego:', err.message);
@@ -1051,14 +1080,13 @@ ${polishText}${altsBlock}`;
   }
 
   /**
-   * Wywołanie Gemini generateContent z pamięcią kondycji modeli:
+   * Wspólne wywołanie Gemini (generateContent lub streamGenerateContent?alt=sse) z pamięcią kondycji modeli:
    * - pamięta modele niedostępne (404) i chwilowo objęte limitem (429/503), więc kolejne zdania idą od razu do działającego modelu,
    * - wyłącza „myślenie” modelu (thinkingBudget: 0 dla 2.x, thinkingLevel: low dla 3.x) — jeśli model odrzuci parametr (400),
    *   ponawia bez niego i zapamiętuje to dla danego modelu.
-   * options.timeoutMs — limit czasu pojedynczego zapytania; options.maxFallbacks — ile modeli zapasowych próbować.
    */
-  async callGeminiWithAutoFallback(apiKey, preferredModel, bodyPayload, options = {}) {
-    const timeoutMs = options.timeoutMs || 3000;
+  async _fetchGeminiWithAutoFallback(apiKey, preferredModel, bodyPayload, options = {}, isStream = false) {
+    const timeoutMs = options.timeoutMs || (isStream ? 5000 : 3000);
     const maxFallbacks = options.maxFallbacks ?? 2;
     const now = Date.now();
     const cleanPreferred = (preferredModel || 'gemini-flash-latest').replace(/^models\//, '');
@@ -1090,8 +1118,9 @@ ${polishText}${altsBlock}`;
     const sendRequest = async (modelId, payload) => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      const methodSuffix = isStream ? ':streamGenerateContent?alt=sse&' : ':generateContent?';
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}${methodSuffix}key=${encodeURIComponent(apiKey)}`;
         return await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1111,9 +1140,9 @@ ${polishText}${altsBlock}`;
         res = await sendRequest(modelId, withoutThinking(payloadForModel));
       }
       if (res.status === 404) {
-        this.modelBlockedUntil.set(modelId, Date.now() + 3600_000); // zablokuj na 1h
+        this.modelBlockedUntil.set(modelId, Date.now() + 3600_000);
       } else if (res.status === 429 || res.status === 503) {
-        this.modelBlockedUntil.set(modelId, Date.now() + 45_000); // zablokuj na 45s przy limicie RPM
+        this.modelBlockedUntil.set(modelId, Date.now() + 45_000);
       } else if (res.ok) {
         this.activeFastModel = modelId;
       }
@@ -1125,16 +1154,13 @@ ${polishText}${altsBlock}`;
     try {
       response = await tryModel(primaryModel);
       primaryStatus = response.status;
-      if (response.ok) {
-        return response.json();
-      }
+      if (response.ok) return response;
     } catch (_) {
       this.modelBlockedUntil.set(primaryModel, now + 20_000);
       primaryStatus = 503;
     }
 
     if (primaryStatus === 404 || primaryStatus === 429 || primaryStatus === 503) {
-      // Szybka lista zapasowa (maksymalnie 2 próby na zdanie, aby nigdy nie blokować napisów!)
       const fastFallbacks = [
         this.activeFastModel,
         'gemini-2.5-flash-lite',
@@ -1151,7 +1177,7 @@ ${polishText}${altsBlock}`;
             if (primaryStatus === 404 && primaryModel === cleanPreferred) {
               this.onModelAutoSwitched?.(candidate, this.cachedDiscoveredModels || []);
             }
-            return retryRes.json();
+            return retryRes;
           }
         } catch (_) {
           this.modelBlockedUntil.set(candidate, Date.now() + 20_000);
@@ -1164,7 +1190,63 @@ ${polishText}${altsBlock}`;
       throw new Error(`Kod ${response ? response.status : 'TIMEOUT'}: ${errBody.slice(0, 220)}`);
     }
 
-    return response.json();
+    return response;
+  }
+
+  async callGeminiWithAutoFallback(apiKey, preferredModel, bodyPayload, options = {}) {
+    const res = await this._fetchGeminiWithAutoFallback(apiKey, preferredModel, bodyPayload, options, false);
+    return res.json();
+  }
+
+  /**
+   * Strumieniowe wywołanie Gemini (:streamGenerateContent?alt=sse).
+   * Wywołuje onPartial(accumulatedText) na bieżąco w trakcie generowania tokenów.
+   */
+  async callGeminiStreamWithAutoFallback(apiKey, preferredModel, bodyPayload, onPartial, options = {}) {
+    const res = await this._fetchGeminiWithAutoFallback(apiKey, preferredModel, bodyPayload, options, true);
+    if (!res.body || typeof res.body.getReader !== 'function') {
+      const data = await res.json();
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const textPart = parts.find((p) => typeof p.text === 'string' && !p.thought) || parts[0];
+      return textPart?.text || '';
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let fullText = '';
+
+    const processLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) return;
+      const jsonStr = trimmed.slice(5).trim();
+      if (!jsonStr || jsonStr === '[DONE]') return;
+      try {
+        const chunk = JSON.parse(jsonStr);
+        const parts = chunk?.candidates?.[0]?.content?.parts || [];
+        for (const p of parts) {
+          if (typeof p.text === 'string' && !p.thought) {
+            fullText += p.text;
+          }
+        }
+        if (fullText && typeof onPartial === 'function') {
+          onPartial(fullText);
+        }
+      } catch (_) {}
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        processLine(line);
+      }
+    }
+    if (buffer) processLine(buffer);
+    return fullText;
   }
 
   /**
@@ -1217,42 +1299,33 @@ ${polishText}${altsBlock}`;
       ? 'dowolnego wykrytego języka mówionego'
       : `języka ${srcInfo.namePl} (${srcInfo.nameEn})`;
 
-    const polishSpecificAsr = isPolishSource
+    const languageSpecificRules = isPolishSource
       ? [
-          '2. ADAPTACJA SLANGU I KOREKTA ASR (IT CONTEXT): Zawsze tłumacz intencję techniczną opartą o logikę branżową oraz [SŁOWNIK KONTEKSTOWY]. Naprawiaj błędy fonetyczne ASR przed tłumaczeniem. Na przykład:',
-          '   - "rysiem" / "rys" w kontekście wdrożeń -> "release" (nie "lynx")',
-          '   - "intuicja" w kontekście zarządzania urządzeniami -> "Intune"',
-          '   - "obrońca" w kontekście bezpieczeństwa -> "Defender"',
-          '   - "w obozie" / "ażur" w kontekście chmury -> "Azure"',
-          '   - "Lecimy z tym koksem" -> "Let\'s get to work" / "Let\'s get down to business"',
-          '   - Slang oceniający ("patologia", "przejebana sprawa", "rzeźba", "druciarstwo") w odniesieniu do projektu lub podatności tłumacz jako "massive mess", "complete disaster" lub "awful workaround" (lub odpowiednik w języku docelowym). Zachowaj emocjonalny wydźwięk, unikając terminologii medycznej (nigdy nie używaj słowa "pathology").',
-          '3. OCHRONA TERMINOLOGII IT: Zachowuj w oryginale akronimy i nazwy własne (np. XDR, PHP, Linux, Entra ID). Rozpoznawaj polskie końcówki deklinacyjne dołączone do skrótów (np. "MDM-ów" -> "MDMs", "XDR-ami" -> "XDRs") i konwertuj je na poprawną formę w języku docelowym.',
-          '5. POLSKIE WYPEŁNIACZE I OTWARTA STRUKTURA: Ignoruj polskie wypełniacze ("no", "także", "jakby" traktuj jako pauzy myślowe lub pomijaj). Jeśli fragment uciął się w połowie, pozostaw otwartą strukturę gramatyczną – nie stawiaj kropki.'
+          `2. NATURALNY PRZEKŁAD KONFERENCYJNY (ZERO KALEK): Tłumacz sens, intencję i emocje wypowiedzi, a nie słowa jeden do jednego. Przebudowuj polski szyk zdania na naturalną, idiomatyczną składnię języka ${tgtInfo.namePl} (${tgtInfo.nameEn}). Polskie idiomy, przysłowia, metafory (np. sportowe, żeglarskie, życiowe, biznesowe) oraz swobodne zwroty do publiczności przekładaj na ich naturalne, żywe odpowiedniki w języku docelowym.`,
+          '3. UNIWERSALNOŚĆ I DOPASOWANIE TONU DO SCENY: Dostosowuj rejestr języka do charakteru wypowiedzi — zachowaj elegancję i podniosłość podczas podziękowań, jubileuszu czy wręczania nagród, klarowność i autorytet w przemówieniu zarządu/szefa, a energię, obrazowość i ładunek emocjonalny w mowie motywacyjnej czy opowieściach gościa specjalnego. Nie narzucaj żargonu technicznego ani korporacyjnego, jeśli mówca mówi językiem ogólnym lub osobistym.',
+          '4. KOREKTA PRZEKRĘCEŃ MIKROFONU (ASR) Z KONTEKSTU: Jeśli transkrypcja zawiera słowo ewidentnie przekręcone fonetycznie i pozbawione sensu w danym zdaniu, odtwórz właściwe słowo na podstawie logiki zdania, tematu wydarzenia, aktywnego slajdu i [SŁOWNIKA KONTEKSTOWEGO]. Nigdy nie wymyślaj nazw produktów ani obcych terminów spoza kontekstu.',
+          '5. NAZWY WŁASNE, NAZWISKA I KATEGORIE NAGRÓD: Zachowuj poprawną pisownię nazw własnych, nazw firm, imion i nazwisk oraz skrótów (zgodnie ze [SŁOWNIKIEM KONTEKSTOWYM] i aktywnym slajdem). Usuwaj polskie końcówki fleksyjne z odmienianych nazwisk, nazw firm i skrótów, stosując formę naturalną dla języka docelowego.',
+          '6. POLSKIE WYPEŁNIACZE I NIEDOKOŃCZONE ZDANIA: Pomijaj ustne przerywniki i wypełniacze pauz ("no", "także", "jakby", "prawda", "że tak powiem", "generalnie" użyte jako przerywnik). Zaczynaj pełne zdania wielką literą i stosuj czytelną interpunkcję, ale jeśli fragment urywa się w połowie myśli, pozostaw otwartą strukturę gramatyczną bez kropki na końcu.'
         ]
       : [
-          '2. ADAPTACJA SLANGU I KOREKTA ASR (IT CONTEXT): Jeśli transkrypcja zawiera błędy ze słyszenia w języku źródłowym (zniekształcone terminy IT, nazwy narzędzi lub marek), użyj logiki branżowej i [SŁOWNIK KONTEKSTOWY], aby odtworzyć właściwy sens przed tłumaczeniem. Nie tłumacz dosłownie absurdalnych błędów rozpoznawania mowy.',
-          '3. OCHRONA TERMINOLOGII IT: Zachowuj w oryginale akronimy i nazwy własne (np. XDR, PHP, Linux, Entra ID, Azure, Intune, Defender) z poprawną odmianą w języku docelowym.',
-          '5. WYPEŁNIACZE MOWY POTOCZNEJ I OTWARTA STRUKTURA: Pomijaj lub naturalnie redukuj typowe wypełniacze pauz myślowych w języku źródłowym (np. "also", "ähm", "euh", "bueno", "allora", "szóval", "you know"). Jeśli fragment uciął się w połowie, pozostaw otwartą strukturę gramatyczną – nie stawiaj kropki.'
+          `2. NATURALNY PRZEKŁAD KONFERENCYJNY (ZERO KALEK): Tłumacz sens, intencję i emocje wypowiedzi na naturalny, idiomatyczny język ${tgtInfo.namePl} (${tgtInfo.nameEn}), unikając dosłownych kalek składniowych. Idiomy, metafory i zwroty sceniczne oddawaj naturalnymi odpowiednikami w języku docelowym.`,
+          '3. UNIWERSALNOŚĆ I DOPASOWANIE TONU DO SCENY: Dopasowuj rejestr do charakteru chwili (gala i rozdanie nagród, przemówienie lidera/zarządu, wystąpienie motywacyjne, storytelling, panel dyskusyjny). Nie narzucaj sztucznego żargonu spoza kontekstu.',
+          '4. KOREKTA BŁĘDÓW ASR I OCHRONA NAZW WŁASNYCH: Naprawiaj oczywiste błędy fonetyczne rozpoznawania mowy w oparciu o kontekst zdania, aktywny slajd i [SŁOWNIK KONTEKSTOWY]. Zachowuj poprawną pisownię imion, nazwisk, nazw firm i skrótów.',
+          '5. WYPEŁNIACZE MOWY POTOCZNEJ I OTWARTA STRUKTURA: Pomijaj typowe wypełniacze zawahania ("well", "uhm", "you know", "also", "bueno", "euh"). Jeśli fragment uciął się w połowie myśli, pozostaw otwartą strukturę gramatyczną bez kropki na końcu.'
         ];
 
     return [
-      `Jesteś zaawansowanym tłumaczem symultanicznym działającym w aplikacji w czasie rzeczywistym. Otrzymujesz [KONTEKST] (poprzednie zdania) oraz tekst [DO PRZETŁUMACZENIA] z ${srcDesc}. Twoim zadaniem jest przetłumaczenie tekstu na naturalny, płynny język ${tgtInfo.namePl} (${tgtInfo.nameEn}).`,
+      `Jesteś doświadczonym tłumaczem symultanicznym obsługującym wydarzenie na żywo (konferencje, gale wręczenia nagród, wystąpienia liderów, mowy motywacyjne i panele dyskusyjne). Otrzymujesz [KONTEKST] (poprzednie zdania) oraz bieżący fragment z ${srcDesc}. Twoim zadaniem jest przełożenie go na naturalny, płynny i dobrze brzmiący na dużym ekranie język ${tgtInfo.namePl} (${tgtInfo.nameEn}).`,
       '',
-      'DOMENA: Cyberbezpieczeństwo, Administracja Systemami (Linux, Windows), Cloud Computing (Azure), nowinki technologiczne oraz ogólna debata biznesowa.',
-      '',
-      'Bezwzględnie stosuj się do poniższych reguł:',
-      `1. FILTR SZUMU (NOISE REDUCTION & ZERO TOLERANCE DLA POWTÓRZEŃ): Traktuj wszelkie jąkanie, zacięcia i powtórzenia słów lub całych fraz w tekście źródłowym jako BŁĄD SYSTEMU NASŁUCHOWEGO (szum). Twoim zadaniem jest bezwzględne odfiltrowanie tego szumu. NIGDY, pod żadnym pozorem, nie generuj powtórzeń w języku docelowym (${tgtInfo.namePl}). Redukuj też rozwlekłe emfazy do zwięzłej esencji przekazu.`,
-      polishSpecificAsr[0],
-      ...(isPolishSource ? polishSpecificAsr.slice(1, 7) : []),
-      polishSpecificAsr[isPolishSource ? 7 : 1],
-      '4. ROLA KONTEKSTU (SLIDING WINDOW): [KONTEKST] służy WYŁĄCZNIE do spójności gramatycznej, prawidłowego doboru zaimków i zrozumienia bieżącego wątku. Pod żadnym pozorem NIE tłumacz ponownie treści znajdujących się w [KONTEKŚCIE].',
-      polishSpecificAsr[isPolishSource ? 8 : 2],
-      '6. ZAKRES IT JEST TYLKO POMOCNICZY: Używaj logiki branży IT do korekty błędów ASR TYLKO wtedy, gdy słowo w transkrypcji ewidentnie nie ma sensu. Zwykłe potoczne słowa tłumacz normalnie. Nie wymyślaj na siłę terminów technicznych, gdy z kontekstu wynika luźna rozmowa.',
+      'ZASADY TŁUMACZENIA:',
+      `1. FILTR SZUMU I BRAK POWTÓRZEŃ: Traktuj zająknięcia, zacięcia mikrofonu oraz przypadkowe powtórzenia słów lub fraz w tekście źródłowym jako szum mowy mówionej — odfiltruj je i NIGDY nie powtarzaj tych samych słów obok siebie w języku ${tgtInfo.namePl} (chyba że to celowy zabieg retoryczny mówcy).`,
+      ...languageSpecificRules,
+      '7. ROLA KONTEKSTU (SLIDING WINDOW): [KONTEKST] służy WYŁĄCZNIE do zachowania spójności wątku, właściwych zaimków i dokańczania urwanych zdań. Pod żadnym pozorem NIE tłumacz ponownie treści znajdujących się w [KONTEKŚCIE].',
       speakerName ? `\nAKTUALNIE PRZEMAWIA: ${speakerName}` : '',
-      config.debateTopic ? `\nTEMAT I KONTEKST DEBATY:\n${config.debateTopic.trim()}` : '',
-      config.currentSlideContext ? `\n[AKTUALNY SLAJD PREZENTACJI] (terminologia i pojęcia widoczne teraz na ekranie — używaj do poprawy nazw własnych i akronimów):\n${config.currentSlideContext.trim()}` : '',
-      config.glossary ? `\n[SŁOWNIK KONTEKSTOWY] (pojęcia, nazwiska, narzędzia — stosuj bezwzględnie):\n${config.glossary.trim()}` : '',
-      contextLines ? `\n[KONTEKST] (poprzednie wypowiedzi — tylko do spójności, NIE tłumacz ich ponownie!):\n${contextLines}` : '',
+      config.debateTopic ? `\nTEMAT I CHARAKTER WYDARZENIA:\n${config.debateTopic.trim()}` : '',
+      config.currentSlideContext ? `\n[AKTUALNY SLAJD NA EKRANIE] (pomocniczy kontekst nazw własnych, kategorii nagród lub haseł ze slajdu):\n${config.currentSlideContext.trim()}` : '',
+      config.glossary ? `\n[SŁOWNIK KONTEKSTOWY] (nazwiska, nazwy własne, pojęcia — stosuj dokładnie w podanym brzmieniu):\n${config.glossary.trim()}` : '',
+      contextLines ? `\n[KONTEKST] (poprzednie wypowiedzi — tylko dla spójności, NIE tłumacz ich ponownie!):\n${contextLines}` : '',
       isAudio
         ? `\nOdpowiadaj wyłącznie poprawnym obiektem JSON o kluczach "pl" (transkrypcja źródłowa) oraz "en" (tłumaczenie na język ${tgtInfo.namePl}).`
         : `\nZwracaj wyłącznie sam przetłumaczony tekst w języku ${tgtInfo.namePl} (${tgtInfo.nameEn}), bez żadnych dodatkowych wyjaśnień.`
@@ -1349,6 +1422,47 @@ function pcmRms(samples) {
   const step = 4;
   for (let i = 0; i < samples.length; i += step) sum += samples[i] * samples[i];
   return Math.sqrt(sum / Math.ceil(samples.length / step));
+}
+
+/**
+ * Przycina początkową i końcową ciszę z bufora PCM, zostawiając 80 ms marginesu,
+ * aby zmniejszyć rozmiar wysyłanego WAV bez ucinania sylab.
+ */
+function trimSilenceFromPcm(samples, sampleRate = 16000, threshold = 0.008) {
+  if (!samples || samples.length < sampleRate * 0.3) return samples;
+  const windowSize = Math.max(1, Math.floor(sampleRate * 0.02));
+  const padSamples = Math.floor(sampleRate * 0.08);
+
+  let startIdx = 0;
+  for (let i = 0; i < samples.length; i += windowSize) {
+    let peak = 0;
+    const end = Math.min(samples.length, i + windowSize);
+    for (let j = i; j < end; j++) {
+      const v = Math.abs(samples[j]);
+      if (v > peak) peak = v;
+    }
+    if (peak >= threshold) {
+      startIdx = Math.max(0, i - padSamples);
+      break;
+    }
+  }
+
+  let endIdx = samples.length;
+  for (let i = samples.length - windowSize; i >= startIdx; i -= windowSize) {
+    let peak = 0;
+    const end = Math.min(samples.length, i + windowSize);
+    for (let j = Math.max(0, i); j < end; j++) {
+      const v = Math.abs(samples[j]);
+      if (v > peak) peak = v;
+    }
+    if (peak >= threshold) {
+      endIdx = Math.min(samples.length, end + padSamples);
+      break;
+    }
+  }
+
+  if (endIdx - startIdx < sampleRate * 0.25) return samples;
+  return samples.subarray(startIdx, endIdx);
 }
 
 function mergeFloat32Arrays(arrays) {

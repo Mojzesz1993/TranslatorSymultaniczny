@@ -87,7 +87,9 @@
           <div class="stage-bg-layer" id="prevBgLayer">
             <img id="prevBgImage" class="stage-bg-media hidden" alt="" />
             <video id="prevBgVideo" class="stage-bg-media hidden" autoplay loop muted playsinline></video>
-            <img id="prevSlideImg" class="stage-bg-media hidden" alt="" style="object-fit: contain; background: #000;" />
+            <img id="prevSlideImg" class="stage-bg-media hidden" alt="" style="object-fit: contain; background: transparent;" />
+            <video id="prevSlideVideo" class="stage-bg-media hidden" muted playsinline preload="auto" style="background: transparent;"></video>
+            <canvas id="prevSlideCanvas" class="stage-bg-media hidden" style="background: transparent;"></canvas>
             <div id="prevBgOverlay" class="stage-bg-overlay"></div>
           </div>
           <div class="stage-safe-area" id="prevSafeArea">
@@ -142,7 +144,7 @@
           <div class="card-title">
             <span>✍️ Szybkie Wysłanie Tekstu i Historia Wypowiedzi (Edycja na żywo)</span>
           </div>
-          <div style="display: flex; gap: 6px;">
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
             <button id="btnExportTxt" class="btn btn-sm btn-outline" title="Zapisz pełny przebieg debaty do pliku TXT">
               💾 Eksport TXT
             </button>
@@ -151,6 +153,9 @@
             </button>
             <button id="btnExportSrt" class="btn btn-sm btn-outline" title="Zapisz napisy w formacie wideo SRT">
               🎬 Eksport SRT
+            </button>
+            <button id="btnClearHistory" class="btn btn-sm btn-outline" title="Wyczyść całą historię tłumaczenia">
+              🗑 Wyczyść historię
             </button>
           </div>
         </div>
@@ -627,19 +632,38 @@
             />
           </div>
 
-          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
             <button id="btnToggleBanner" class="btn btn-primary">
               🪧 Wyświetl planszę na ekranie prezentacji
             </button>
-            <button class="btn btn-outline btn-sm" data-banner-preset="welcome">
-              Preset: Powitanie (Welcome)
+            <button id="btnAddBannerPreset" class="btn btn-outline btn-sm" type="button">
+              ➕ Zapisz jako nowy preset
             </button>
-            <button class="btn btn-outline btn-sm" data-banner-preset="break">
-              Preset: Przerwa (Short Break)
-            </button>
-            <button class="btn btn-outline btn-sm" data-banner-preset="qa">
-              Preset: Sesja Q&A
-            </button>
+          </div>
+
+          <div class="field-group" style="margin-top: 14px;">
+            <label class="field-label">Zapisane presety planszy (kliknij, aby wyświetlić; ✏️ aby edytować)</label>
+            <div id="bannerPresetsContainer" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+          </div>
+
+          <div id="bannerPresetEditor" style="display: none; margin-top: 12px; padding: 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; background: rgba(255,255,255,0.03);">
+            <div style="font-size: 13px; font-weight: 600; margin-bottom: 10px;" id="bannerPresetEditorTitle">Nowy preset planszy</div>
+            <div class="field-group" style="margin-bottom: 8px;">
+              <label class="field-label">Nazwa przycisku (np. Przerwa kawowa)</label>
+              <input type="text" id="inpPresetLabel" class="input" placeholder="np. Obiad / Lunch" />
+            </div>
+            <div class="field-group" style="margin-bottom: 8px;">
+              <label class="field-label">Główny tytuł planszy</label>
+              <input type="text" id="inpPresetTitle" class="input" placeholder="np. LUNCH BREAK" />
+            </div>
+            <div class="field-group" style="margin-bottom: 10px;">
+              <label class="field-label">Podtytuł / informacja dodatkowa</label>
+              <input type="text" id="inpPresetSubtitle" class="input" placeholder="np. Back at 14:00" />
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button id="btnSaveBannerPreset" class="btn btn-primary btn-sm" type="button">💾 Zapisz preset</button>
+              <button id="btnCancelBannerPreset" class="btn btn-outline btn-sm" type="button">Anuluj</button>
+            </div>
           </div>
         </div>
       </section>

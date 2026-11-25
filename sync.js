@@ -61,7 +61,29 @@ export const DEFAULT_SETTINGS = {
   marginTopPct: 8,
   marginBottomPct: 8,
   marginLeftPct: 7,
-  marginRightPct: 7
+  marginRightPct: 7,
+
+  // Presety planszy przerwy / tytułu
+  bannerPresets: [
+    {
+      id: 'welcome',
+      label: 'Powitanie (Welcome)',
+      title: 'WELCOME TO THE DEBATE',
+      subtitle: 'Live English Translation — Starting Shortly'
+    },
+    {
+      id: 'break',
+      label: 'Przerwa (Short Break)',
+      title: 'SHORT BREAK',
+      subtitle: 'We will resume the debate in a few minutes'
+    },
+    {
+      id: 'qa',
+      label: 'Sesja Q&A',
+      title: 'Q&A SESSION',
+      subtitle: 'Questions from the Audience'
+    }
+  ]
 };
 
 export const DEFAULT_LIVE_STATE = {
@@ -141,7 +163,7 @@ export const DEFAULT_API_CONFIG = {
   audioDeviceId: 'default',
   draftIntervalMs: 2000,       // Jak często tłumaczyć Live Draft w trakcie długiego zdania
   vadSilenceMs: 1400,          // Po jakim czasie ciszy zamykać zdanie w trybie Direct Audio
-  debateTopic: 'Debata ekspercka na żywo (Polska -> Angielski). Ton profesjonalny, klarowny, konferencyjny.',
+  debateTopic: 'Wydarzenie firmowe na żywo: przemówienie zarządu, gala wręczenia nagród oraz wystąpienie motywacyjne gościa specjalnego. Ton naturalny, angażujący i dopasowany do charakteru chwili.',
   glossary: 'KPO = National Recovery Plan (KPO)\nAI = Artificial Intelligence (AI)\nUE = European Union (EU)',
   speakersList: [
     'Moderator',
@@ -436,7 +458,9 @@ export class SyncManager {
 
   startServerPolling() {
     let lastBgVersion = 0;
+    let tickCount = 0;
     setInterval(async () => {
+      tickCount += 1;
       try {
         const res = await fetch('/api/state');
         if (res.ok) {
@@ -454,17 +478,20 @@ export class SyncManager {
         }
       } catch (_) {}
 
-      try {
-        const bgRes = await fetch('/api/background');
-        if (bgRes.ok) {
-          const bgData = await bgRes.json();
-          if (bgData.version > lastBgVersion) {
-            lastBgVersion = bgData.version;
-            this.bgListeners.forEach((cb) => cb(bgData));
+      // Tło zmienia się rzadko — sprawdzaj co ~1.5s zamiast co 150ms
+      if (tickCount % 10 === 1) {
+        try {
+          const bgRes = await fetch('/api/background');
+          if (bgRes.ok) {
+            const bgData = await bgRes.json();
+            if (bgData.version > lastBgVersion) {
+              lastBgVersion = bgData.version;
+              this.bgListeners.forEach((cb) => cb(bgData));
+            }
           }
-        }
-      } catch (_) {}
-    }, 600);
+        } catch (_) {}
+      }
+    }, 150);
   }
 
   onChange(callback) {

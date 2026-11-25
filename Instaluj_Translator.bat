@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Instalator — Debate Live Translator (PL -^> EN)
+title Instalator — Debate Live Translator (Live AI)
 cd /d "%~dp0"
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"

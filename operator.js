@@ -32,6 +32,8 @@ const previewDom = {
   bgImage: document.getElementById('prevBgImage'),
   bgVideo: document.getElementById('prevBgVideo'),
   slideImg: document.getElementById('prevSlideImg'),
+  slideVideo: document.getElementById('prevSlideVideo'),
+  slideCanvas: document.getElementById('prevSlideCanvas'),
   bgOverlay: document.getElementById('prevBgOverlay'),
   safeArea: document.getElementById('prevSafeArea'),
   customBanner: document.getElementById('prevCustomBanner'),
@@ -142,6 +144,7 @@ function syncVoiceProfilesToLiveState() {
 }
 
 // Inicjalizacja silnika tłumaczenia
+let onDraftUpdateLastSync = 0;
 const engine = new DebateTranslatorEngine({
   getApiConfig: () => {
     const slideParts = [];
@@ -165,7 +168,7 @@ const engine = new DebateTranslatorEngine({
   onAudioSourceStopped: () => {
     voiceId.detachAudio();
   },
-  onDraftUpdate: ({ id, pl, en, speaker, plOnly }) => {
+  onDraftUpdate: ({ id, pl, en, speaker, plOnly, isStreaming }) => {
     document.getElementById('liveDraftPl').textContent = pl ? `🎙 ${pl}...` : '—';
     if (en) {
       document.getElementById('liveDraftEn').textContent = en;
@@ -174,6 +177,25 @@ const engine = new DebateTranslatorEngine({
     const resolvedSpeaker = speaker || sync.liveState.activeSpeaker || '';
     if (!engine.activeSegmentSpeaker && resolvedSpeaker) {
       engine.activeSegmentSpeaker = resolvedSpeaker;
+    }
+
+    // Gdy napływa strumieniowane tłumaczenie z Gemini (lub Live Draft EN), pokazuj je od razu na ekranie prezentacji (z lekkim throttlingiem 100 ms)
+    if (en && !plOnly) {
+      const now = Date.now();
+      const lastSync = onDraftUpdateLastSync || 0;
+      if (now - lastSync >= 100) {
+        onDraftUpdateLastSync = now;
+        sync.updateLiveState({
+          liveDraft: {
+            id: id || 'live-draft',
+            pl: pl || '',
+            en,
+            speaker: resolvedSpeaker,
+            isStreaming: !!isStreaming,
+            updatedAt: now
+          }
+        });
+      }
     }
   },
   onFinalSegment: ({ id, pl, en, speaker }) => {
@@ -208,6 +230,7 @@ const engine = new DebateTranslatorEngine({
     }
 
     // Pokaż w panelu operatora ostatnie sczytane zdanie PL oraz jego gotowe tłumaczenie EN
+    onDraftUpdateLastSync = 0;
     document.getElementById('liveDraftPl').textContent = pl ? `✓ ${pl}` : '—';
     document.getElementById('liveDraftEn').textContent = en ? `✓ ${en}` : '—';
 
@@ -1300,6 +1323,14 @@ function bindVoiceRecognitionControls() {
 function bindBannerControls() {
   const inpTitle = document.getElementById('inpBannerTitle');
   const inpSubtitle = document.getElementById('inpBannerSubtitle');
+  const presetsContainer = document.getElementById('bannerPresetsContainer');
+  const editorBox = document.getElementById('bannerPresetEditor');
+  const editorHeading = document.getElementById('bannerPresetEditorTitle');
+  const inpPresetLabel = document.getElementById('inpPresetLabel');
+  const inpPresetTitle = document.getElementById('inpPresetTitle');
+  const inpPresetSubtitle = document.getElementById('inpPresetSubtitle');
+
+  let editingPresetId = null;
 
   inpTitle.value = sync.liveState.customBanner?.title || 'WELCOME TO THE DEBATE';
   inpSubtitle.value = sync.liveState.customBanner?.subtitle || 'Live English Translation — Starting Shortly';
@@ -1328,28 +1359,118 @@ function bindBannerControls() {
     });
   });
 
-  document.querySelectorAll('[data-banner-preset]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const p = btn.getAttribute('data-banner-preset');
-      if (p === 'welcome') {
-        inpTitle.value = 'WELCOME TO THE DEBATE';
-        inpSubtitle.value = 'Live English Translation — Starting Shortly';
-      } else if (p === 'break') {
-        inpTitle.value = 'SHORT BREAK';
-        inpSubtitle.value = 'We will resume the debate in a few minutes';
-      } else if (p === 'qa') {
-        inpTitle.value = 'Q&A SESSION';
-        inpSubtitle.value = 'Questions from the Audience';
-      }
-      sync.updateLiveState({
-        customBanner: {
-          active: true,
-          title: inpTitle.value,
-          subtitle: inpSubtitle.value
-        }
+  function getPresets() {
+    const list = sync.settings.bannerPresets;
+    return Array.isArray(list) ? list : [];
+  }
+
+  function openPresetEditor(preset = null) {
+    if (preset) {
+      editingPresetId = preset.id;
+      editorHeading.textContent = `Edycja presetu: ${preset.label}`;
+      inpPresetLabel.value = preset.label || '';
+      inpPresetTitle.value = preset.title || '';
+      inpPresetSubtitle.value = preset.subtitle || '';
+    } else {
+      editingPresetId = null;
+      editorHeading.textContent = 'Nowy preset planszy';
+      inpPresetLabel.value = inpTitle.value.trim() ? inpTitle.value.trim().slice(0, 28) : '';
+      inpPresetTitle.value = inpTitle.value || '';
+      inpPresetSubtitle.value = inpSubtitle.value || '';
+    }
+    editorBox.style.display = 'block';
+    inpPresetLabel.focus();
+  }
+
+  function closePresetEditor() {
+    editingPresetId = null;
+    editorBox.style.display = 'none';
+  }
+
+  function renderPresets() {
+    const presets = getPresets();
+    presetsContainer.innerHTML = '';
+
+    presets.forEach((preset) => {
+      const group = document.createElement('div');
+      group.style.cssText = 'display: inline-flex; align-items: center; gap: 2px;';
+
+      const applyBtn = document.createElement('button');
+      applyBtn.type = 'button';
+      applyBtn.className = 'btn btn-outline btn-sm';
+      applyBtn.textContent = preset.label || preset.title || 'Preset';
+      applyBtn.title = `${preset.title || ''}${preset.subtitle ? ' — ' + preset.subtitle : ''}`;
+      applyBtn.addEventListener('click', () => {
+        inpTitle.value = preset.title || '';
+        inpSubtitle.value = preset.subtitle || '';
+        sync.updateLiveState({
+          customBanner: {
+            active: true,
+            title: inpTitle.value,
+            subtitle: inpSubtitle.value
+          }
+        });
       });
+
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'btn btn-outline btn-sm';
+      editBtn.textContent = '✏️';
+      editBtn.title = 'Edytuj preset';
+      editBtn.style.padding = '4px 7px';
+      editBtn.addEventListener('click', () => openPresetEditor(preset));
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn btn-outline btn-sm';
+      delBtn.textContent = '🗑';
+      delBtn.title = 'Usuń preset';
+      delBtn.style.padding = '4px 7px';
+      delBtn.addEventListener('click', () => {
+        const next = getPresets().filter((p) => p.id !== preset.id);
+        sync.updateSettings({ bannerPresets: next });
+        if (editingPresetId === preset.id) closePresetEditor();
+        renderPresets();
+      });
+
+      group.appendChild(applyBtn);
+      group.appendChild(editBtn);
+      group.appendChild(delBtn);
+      presetsContainer.appendChild(group);
     });
+  }
+
+  document.getElementById('btnAddBannerPreset').addEventListener('click', () => {
+    openPresetEditor(null);
   });
+
+  document.getElementById('btnCancelBannerPreset').addEventListener('click', closePresetEditor);
+
+  document.getElementById('btnSaveBannerPreset').addEventListener('click', () => {
+    const label = inpPresetLabel.value.trim() || inpPresetTitle.value.trim() || 'Własny preset';
+    const title = inpPresetTitle.value.trim();
+    const subtitle = inpPresetSubtitle.value.trim();
+
+    const current = getPresets();
+    let next;
+    if (editingPresetId) {
+      next = current.map((p) => (p.id === editingPresetId ? { ...p, label, title, subtitle } : p));
+    } else {
+      const newPreset = {
+        id: 'preset-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
+        label,
+        title,
+        subtitle
+      };
+      next = [...current, newPreset];
+    }
+
+    sync.updateSettings({ bannerPresets: next });
+    closePresetEditor();
+    renderPresets();
+  });
+
+  renderPresets();
 }
 
 /**
@@ -1379,16 +1500,48 @@ function bindTransportAndActions() {
     }
   });
 
-  // Otwarcie dedykowanego okna Ekranu Prezentacji (na rzutnik / drugi ekran)
-  document.getElementById('btnOpenScreenWindow').addEventListener('click', () => {
+  let cachedMonitors = [];
+  fetch('/api/monitors', { cache: 'no-store' })
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && Array.isArray(data.monitors)) cachedMonitors = data.monitors;
+    })
+    .catch(() => {});
+
+  // Otwarcie dedykowanego okna Ekranu Prezentacji (na wybrany monitor / rzutnik)
+  document.getElementById('btnOpenScreenWindow').addEventListener('click', async () => {
+    try {
+      const mRes = await fetch('/api/monitors', { cache: 'no-store' });
+      const mData = await mRes.json();
+      if (mData && Array.isArray(mData.monitors)) cachedMonitors = mData.monitors;
+    } catch {
+      // użyj ostatniej znanej listy monitorów
+    }
+
+    const monIdx = Number(currentPresentationState?.nativeMonitorIndex ?? 0);
+    const mon = cachedMonitors.find((m) => Number(m.index) === monIdx) || cachedMonitors[0];
+
     if (presentationWindowRef && !presentationWindowRef.closed) {
+      if (mon) {
+        try {
+          presentationWindowRef.moveTo(mon.left, mon.top);
+          presentationWindowRef.resizeTo(mon.width, mon.height);
+        } catch {
+          // ignore
+        }
+      }
       presentationWindowRef.focus();
       return;
     }
+
+    const features = mon
+      ? `left=${mon.left},top=${mon.top},width=${mon.width},height=${mon.height},menubar=no,toolbar=no,location=no,status=no`
+      : 'width=1280,height=720,menubar=no,toolbar=no,location=no,status=no';
+
     presentationWindowRef = window.open(
       'screen.html',
       'DebatePresentationScreen',
-      'width=1280,height=720,menubar=no,toolbar=no,location=no,status=no'
+      features
     );
   });
 
@@ -1433,12 +1586,25 @@ function bindTransportAndActions() {
   }
   pollOperatorPresentation();
 
-  // Wyczyść napisy z ekranu
-  document.getElementById('btnClearScreen').addEventListener('click', () => {
+  function clearTranslationHistory() {
+    document.getElementById('liveDraftPl').textContent = '—';
+    document.getElementById('liveDraftEn').textContent = '—';
     sync.updateLiveState({
       liveDraft: { id: null, pl: '', en: '', speaker: '', updatedAt: Date.now() },
       items: []
     });
+  }
+
+  // Wyczyść napisy z ekranu
+  document.getElementById('btnClearScreen').addEventListener('click', clearTranslationHistory);
+
+  // Wyczyść historię tłumaczenia (z potwierdzeniem, jeśli zawiera wpisy)
+  document.getElementById('btnClearHistory').addEventListener('click', () => {
+    const count = (sync.liveState.items || []).length;
+    if (count > 0 && !confirm('Czy na pewno wyczyścić całą historię tłumaczenia?')) {
+      return;
+    }
+    clearTranslationHistory();
   });
 
   // Blackout (wygaszenie samego tekstu)
