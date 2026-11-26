@@ -3,7 +3,9 @@
 $ErrorActionPreference = "Continue"
 
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-Set-Location $AppDir
+Set-Location -LiteralPath $AppDir
+
+$RequiredImports = "import numpy, onnxruntime, pypdfium2, PIL, tkinter"
 
 Write-Host ""
 Write-Host "====================================================================" -ForegroundColor Cyan
@@ -13,8 +15,16 @@ Write-Host "====================================================================
 Write-Host ""
 
 function Test-PythonModules($PyExe, $ModulesExpr) {
-    cmd /c "`"$PyExe`" -c `"$ModulesExpr`" >nul 2>nul"
-    return ($LASTEXITCODE -eq 0)
+    try {
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        & $PyExe -c $ModulesExpr *> $null
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        return ($code -eq 0)
+    } catch {
+        return $false
+    }
 }
 
 function Find-WorkingPython {
@@ -26,9 +36,11 @@ function Find-WorkingPython {
     $Candidates = @(
         (Join-Path $AppDir ".venv\Scripts\python.exe"),
         "python",
+        "$env:LocalAppData\Programs\Python\Python313\python.exe",
         "$env:LocalAppData\Programs\Python\Python312\python.exe",
         "$env:LocalAppData\Programs\Python\Python311\python.exe",
         "$env:LocalAppData\Programs\Python\Python310\python.exe",
+        "C:\Program Files\Python313\python.exe",
         "C:\Program Files\Python312\python.exe",
         "C:\Program Files\Python311\python.exe",
         "C:\Program Files\Python310\python.exe"
@@ -37,15 +49,20 @@ function Find-WorkingPython {
     $FoundAny = $null
     foreach ($cmd in $Candidates) {
         try {
-            $resolved = Get-Command $cmd -ErrorAction SilentlyContinue
-            if (-not $resolved) { continue }
-            $exePath = $resolved.Source
+            if ([System.IO.Path]::IsPathRooted($cmd)) {
+                if (-not (Test-Path -LiteralPath $cmd)) { continue }
+                $exePath = $cmd
+            } else {
+                $resolved = Get-Command $cmd -ErrorAction SilentlyContinue
+                if (-not $resolved) { continue }
+                $exePath = $resolved.Source
+            }
             if ($exePath -match "WindowsApps\\python") { continue }
             $verCheck = & $exePath -c "import sys; print(sys.version_info[0], sys.version_info[1])" 2>$null
-            if ($LASTEXITCODE -eq 0 -and "$verCheck".Trim() -match "^3 (10|11|12|13)") {
+            if ($LASTEXITCODE -eq 0 -and "$verCheck".Trim() -match "^3 (10|11|12|13)$") {
                 if (-not (Test-PythonModules $exePath "import tkinter")) { continue }
                 if (-not $FoundAny) { $FoundAny = $exePath }
-                if (Test-PythonModules $exePath "import numpy, onnxruntime, pypdfium2, tkinter") {
+                if (Test-PythonModules $exePath $RequiredImports) {
                     return $exePath
                 }
             }
@@ -56,7 +73,7 @@ function Find-WorkingPython {
     return $FoundAny
 }
 
-# 1. Sprawdzenie / instalacja środowiska Python 3.12
+# 1. Sprawdzenie / instalacja srodowiska Python 3.12
 Write-Host "[1/5] Sprawdzanie srodowiska Python 3 (z obsluga Tkinter)..." -ForegroundColor Yellow
 $PythonExe = Find-WorkingPython
 
@@ -78,7 +95,7 @@ if (-not $PythonExe) {
         Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath -UseBasicParsing
         Write-Host "      -> Uruchamianie cichej instalacji Python 3.12.8 (moze potrwac ok. 45 sekund)..." -ForegroundColor Gray
         $proc = Start-Process -FilePath $InstallerPath -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_Launcher=1" -Wait -PassThru
-        Remove-Item $InstallerPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
         $PythonExe = Find-WorkingPython
     }
 
@@ -92,37 +109,46 @@ if (-not $PythonExe) {
 $PyVersion = & $PythonExe --version 2>&1
 Write-Host "      [OK] Wykryto: $PyVersion ($PythonExe)" -ForegroundColor Green
 
-# 2. Sprawdzenie i instalacja bibliotek (numpy + onnxruntime + pypdfium2 + msvc-runtime)
+# 2. Sprawdzenie i instalacja bibliotek (numpy + onnxruntime + pypdfium2 + Pillow + msvc-runtime)
 Write-Host ""
-Write-Host "[2/5] Sprawdzanie bibliotek AI, PDF oraz runtime C++ (numpy, onnxruntime, pypdfium2, msvc-runtime)..." -ForegroundColor Yellow
+Write-Host "[2/5] Sprawdzanie bibliotek AI, PDF/obrazow oraz runtime C++ (numpy, onnxruntime, pypdfium2, Pillow, msvc-runtime)..." -ForegroundColor Yellow
 $TargetPython = $PythonExe
 
 function Sync-VcRedistDlls($PyExe) {
     $PyDir = Split-Path -Parent $PyExe
-    $CapiDir = Join-Path $PyDir "Lib\site-packages\onnxruntime\capi"
+    $ParentDir = Split-Path -Parent $PyDir
     $BundledRedist = Join-Path $AppDir "models\vc_redist"
 
-    if (Test-Path $BundledRedist) {
+    $CandidateCapiDirs = @(
+        (Join-Path $PyDir "Lib\site-packages\onnxruntime\capi"),
+        (Join-Path $ParentDir "Lib\site-packages\onnxruntime\capi")
+    )
+
+    if (Test-Path -LiteralPath $BundledRedist) {
         Copy-Item (Join-Path $BundledRedist "*.dll") -Destination $PyDir -Force -ErrorAction SilentlyContinue
-        if (Test-Path $CapiDir) {
-            Copy-Item (Join-Path $BundledRedist "*.dll") -Destination $CapiDir -Force -ErrorAction SilentlyContinue
+        foreach ($CapiDir in $CandidateCapiDirs) {
+            if (Test-Path -LiteralPath $CapiDir) {
+                Copy-Item (Join-Path $BundledRedist "*.dll") -Destination $CapiDir -Force -ErrorAction SilentlyContinue
+            }
         }
     }
-    if (Test-Path $CapiDir) {
-        Get-ChildItem -Path $PyDir -Filter "*140*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName -Destination $CapiDir -Force -ErrorAction SilentlyContinue
+    foreach ($CapiDir in $CandidateCapiDirs) {
+        if (Test-Path -LiteralPath $CapiDir) {
+            Get-ChildItem -LiteralPath $PyDir -Filter "*140*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $CapiDir -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }
 
 Sync-VcRedistDlls $TargetPython
 
-$RequiredImports = "import numpy, onnxruntime, pypdfium2, tkinter"
 if (-not (Test-PythonModules $TargetPython $RequiredImports)) {
-    Write-Host "      -> Instalowanie bibliotek z requirements.txt (msvc-runtime, numpy, onnxruntime, pypdfium2)..." -ForegroundColor Magenta
+    Write-Host "      -> Instalowanie bibliotek z requirements.txt (msvc-runtime, numpy, onnxruntime, pypdfium2, Pillow)..." -ForegroundColor Magenta
+    $ReqFile = Join-Path $AppDir "requirements.txt"
     & $TargetPython -m pip install --upgrade pip --quiet
     & $TargetPython -m pip install --upgrade msvc-runtime --quiet
-    & $TargetPython -m pip install -r (Join-Path $AppDir "requirements.txt") --quiet
+    & $TargetPython -m pip install -r $ReqFile --quiet
     Sync-VcRedistDlls $TargetPython
 
     if (-not (Test-PythonModules $TargetPython $RequiredImports)) {
@@ -138,45 +164,53 @@ if (-not (Test-PythonModules $TargetPython $RequiredImports)) {
         # Fallback do .venv jesli globalny pip wymaga uprawnien
         $VenvDir    = Join-Path $AppDir ".venv"
         $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
-        if (-not (Test-Path $VenvPython)) {
+        if (-not (Test-Path -LiteralPath $VenvPython)) {
             & $PythonExe -m venv $VenvDir
         }
         $TargetPython = $VenvPython
         & $TargetPython -m pip install --upgrade pip --quiet
         & $TargetPython -m pip install --upgrade msvc-runtime --quiet
-        & $TargetPython -m pip install -r (Join-Path $AppDir "requirements.txt") --quiet
+        & $TargetPython -m pip install -r $ReqFile --quiet
         Sync-VcRedistDlls $TargetPython
     }
 }
 
 if (-not (Test-PythonModules $TargetPython $RequiredImports)) {
-    Write-Host "[BLAD] Nie udalo sie zainstalowac lub uruchomic wymaganych bibliotek (numpy, onnxruntime, pypdfium2, tkinter)." -ForegroundColor Red
+    Write-Host "[BLAD] Nie udalo sie zainstalowac lub uruchomic wymaganych bibliotek (numpy, onnxruntime, pypdfium2, Pillow, tkinter)." -ForegroundColor Red
     Write-Host "       Sprawdz polaczenie z internetem i uruchom instalator ponownie." -ForegroundColor Red
     exit 1
 }
-Write-Host "      [OK] Biblioteki numpy, onnxruntime, pypdfium2, tkinter oraz DLL C++ sa gotowe." -ForegroundColor Green
+Write-Host "      [OK] Biblioteki numpy, onnxruntime, pypdfium2, Pillow, tkinter oraz DLL C++ sa gotowe." -ForegroundColor Green
 
-# 3. Weryfikacja / pobranie modelu neuronowego WeSpeaker CAM++ ONNX
+# 3. Weryfikacja / pobranie modelu neuronowego WeSpeaker CAM++ ONNX oraz modulow serwera
 Write-Host ""
-Write-Host "[3/5] Weryfikacja modelu biometrii glosu (WeSpeaker CAM++ ONNX) i silnika PDF..." -ForegroundColor Yellow
-& $TargetPython -c "import neural_voice_id, pypdfium2, tkinter; neural_voice_id.get_ort_session()"
+Write-Host "[3/5] Weryfikacja modelu biometrii glosu (WeSpeaker CAM++ ONNX), silnika PDF/PIL oraz modulow aplikacji..." -ForegroundColor Yellow
+& $TargetPython -c "import neural_voice_id, pypdfium2, tkinter, presentation_manager, server; from PIL import Image; neural_voice_id.get_ort_session()"
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[BLAD] Test modelu ONNX lub silnika PDF nie powiodl sie." -ForegroundColor Red
+    Write-Host "[BLAD] Test modelu ONNX, silnika PDF/Pillow lub modulow serwera nie powiodl sie." -ForegroundColor Red
     exit 1
 }
-Write-Host "      [OK] Silnik ONNX Runtime, model WeSpeaker CAM++ oraz silnik PDF (pypdfium2) dzialaja poprawnie." -ForegroundColor Green
-[System.IO.File]::WriteAllText((Join-Path $AppDir ".python_exe"), $TargetPython, [System.Text.Encoding]::ASCII)
+Write-Host "      [OK] Silnik ONNX Runtime, model WeSpeaker CAM++, silnik PDF/Pillow oraz serwer dzialaja poprawnie." -ForegroundColor Green
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText((Join-Path $AppDir ".python_exe"), $TargetPython, $Utf8NoBom)
 
 # 4. Sprawdzenie opcjonalnej obslugi prezentacji PowerPoint (.ppt / .pptx)
 Write-Host ""
 Write-Host "[4/5] Sprawdzanie obslugi prezentacji PowerPoint (.ppt / .pptx)..." -ForegroundColor Yellow
 $HasPowerPoint = $false
-try {
-    $pptReg = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\POWERPNT.EXE" -ErrorAction SilentlyContinue
-    if ($pptReg -and $pptReg.'(default)' -and (Test-Path $pptReg.'(default)')) {
-        $HasPowerPoint = $true
-    }
-} catch {}
+foreach ($regPath in @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\POWERPNT.EXE",
+    "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\POWERPNT.EXE",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\POWERPNT.EXE"
+)) {
+    try {
+        $pptReg = Get-ItemProperty $regPath -ErrorAction SilentlyContinue
+        if ($pptReg -and $pptReg.'(default)' -and (Test-Path -LiteralPath $pptReg.'(default)')) {
+            $HasPowerPoint = $true
+            break
+        }
+    } catch {}
+}
 
 $LibreOfficeExe = $null
 $sofficeCmd = Get-Command soffice -ErrorAction SilentlyContinue
@@ -187,7 +221,7 @@ if ($sofficeCmd) {
         "C:\Program Files\LibreOffice\program\soffice.exe",
         "C:\Program Files (x86)\LibreOffice\program\soffice.exe"
     )) {
-        if (Test-Path $loPath) {
+        if (Test-Path -LiteralPath $loPath) {
             $LibreOfficeExe = $loPath
             break
         }
@@ -195,16 +229,16 @@ if ($sofficeCmd) {
 }
 
 if ($HasPowerPoint) {
-    Write-Host "      [OK] Wykryto Microsoft PowerPoint — prezentacje .ppt/.pptx oraz .pdf beda konwertowane lokalnie." -ForegroundColor Green
+    Write-Host "      [OK] Wykryto Microsoft PowerPoint - prezentacje .ppt/.pptx oraz .pdf beda konwertowane lokalnie." -ForegroundColor Green
 } elseif ($LibreOfficeExe) {
-    Write-Host "      [OK] Wykryto LibreOffice ($LibreOfficeExe) — prezentacje .ppt/.pptx oraz .pdf beda konwertowane lokalnie." -ForegroundColor Green
+    Write-Host "      [OK] Wykryto LibreOffice ($LibreOfficeExe) - prezentacje .ppt/.pptx oraz .pdf beda konwertowane lokalnie." -ForegroundColor Green
 } else {
     Write-Host "      [UWAGA] Nie wykryto Microsoft PowerPoint ani LibreOffice." -ForegroundColor Magenta
-    Write-Host "              Prezentacje .pdf dzialaja od razu (przez pypdfium2), ale pliki .ppt/.pptx" -ForegroundColor Gray
-    Write-Host "              wymagaja zainstalowanego Microsoft PowerPoint lub darmowego LibreOffice." -ForegroundColor Gray
+    Write-Host "              Prezentacje .pdf, obrazy oraz animacje wideo/GIF dzialaja od razu (pypdfium2 + Pillow)," -ForegroundColor Gray
+    Write-Host "              natomiast pliki .ppt/.pptx wymagaja zainstalowanego Microsoft PowerPoint lub LibreOffice." -ForegroundColor Gray
 }
 
-# 5. Utworzenie skrótu na Pulpicie
+# 5. Utworzenie skrotu na Pulpicie
 Write-Host ""
 Write-Host "[5/5] Tworzenie skrotu na Pulpicie..." -ForegroundColor Yellow
 try {
