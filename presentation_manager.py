@@ -48,6 +48,7 @@ PRESENTATION_STATE = {
     "currentMediaType": "image",  # 'image' | 'video' | 'anim-image'
     "objectFit": "contain",  # 'cover' | 'contain'
     "animLoop": True,
+    "loopCrossfadeSec": 1.2,
     "animAutoAdvance": False,
     "animPlaying": True,
     "animSeekSec": 0.0,
@@ -1086,6 +1087,8 @@ def control_presentation(payload, main_port=8765):
             if payload.get("slideTransition") in ("fade", "slide-fade", "zoom-fade", "none"):
                 PRESENTATION_STATE["slideTransition"] = payload["slideTransition"]
                 PRESENTATION_STATE["effectiveTransition"] = payload["slideTransition"]
+            if "loopCrossfadeSec" in payload and payload["loopCrossfadeSec"] is not None:
+                PRESENTATION_STATE["loopCrossfadeSec"] = max(0.0, min(4.0, float(payload["loopCrossfadeSec"])))
             if payload.get("subtitleLayoutMode") in ("overlay", "split"):
                 PRESENTATION_STATE["subtitleLayoutMode"] = payload["subtitleLayoutMode"]
             if payload.get("subtitlePosition") in ("bottom", "top", "center"):

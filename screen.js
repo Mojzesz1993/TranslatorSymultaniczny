@@ -18,10 +18,533 @@ const SLIDE_IN_CLASSES = [
   'slide-trans-in-zoom-fade'
 ];
 
+const DEFAULT_LOOP_CROSSFADE_SEC = 1.2;
+
+function computeEffectiveLoopFadeSec(durationSec, requestedFadeSec = DEFAULT_LOOP_CROSSFADE_SEC) {
+  const req = Number(requestedFadeSec);
+  const fade = Number.isFinite(req) ? Math.max(0, req) : DEFAULT_LOOP_CROSSFADE_SEC;
+  if (fade <= 0.02 || !Number.isFinite(durationSec) || durationSec < 0.6) {
+    return 0;
+  }
+  return Math.max(0.25, Math.min(fade, durationSec * 0.35));
+}
+
+function buildTwinVideoUrl(url) {
+  if (!url) return url;
+  if (url.startsWith('data:') || url.startsWith('blob:')) return url;
+  const hashIdx = url.indexOf('#');
+  const cleanUrl = hashIdx >= 0 ? url.slice(0, hashIdx) : url;
+  const sep = cleanUrl.includes('?') ? '&' : '?';
+  return `${cleanUrl}${sep}deck=b`;
+}
+
+/**
+ * Dwukanałowy odtwarzacz wideo A/B zapewniający płynne przenikanie (crossfade)
+ * przy każdym zapętleniu animacji wideo (MP4 / WebM / MOV) bez przeskoków i czarnych klatek.
+ */
+export class SeamlessVideoLoopPlayer {
+  constructor(baseVideo, onEnded = null) {
+    this.baseVideo = baseVideo;
+    this.twinVideo = document.createElement('video');
+    this.twinVideo.className = baseVideo.className;
+    this.twinVideo.classList.add('hidden');
+    this.twinVideo.muted = true;
+    this.twinVideo.defaultMuted = true;
+    this.twinVideo.volume = 0;
+    this.twinVideo.playsInline = true;
+    this.twinVideo.setAttribute('playsinline', '');
+    this.twinVideo.preload = 'auto';
+    this.twinVideo.style.background = baseVideo.style.background || 'transparent';
+    this.twinVideo.style.pointerEvents = 'none';
+    if (baseVideo.parentElement) {
+      baseVideo.insertAdjacentElement('afterend', this.twinVideo);
+    }
+
+    this.front = this.baseVideo;
+    this.back = this.twinVideo;
+    this.onEnded = onEnded;
+    this.url = null;
+    this.loop = true;
+    this.crossfadeSec = DEFAULT_LOOP_CROSSFADE_SEC;
+    this.playing = true;
+    this.ended = false;
+
+    this._inCrossfade = false;
+    this._crossfadeWaitingReady = false;
+    this._crossfadeStartMs = 0;
+    this._pausedAtMs = 0;
+    this._activeFadeDurSec = 0;
+    this._lastAlpha = 0;
+    this._rafId = null;
+    this._token = 0;
+
+    this._handleNativeEnded = (e) => {
+      if (e.target !== this.front) return;
+      if (!this.loop) {
+        this.playing = false;
+        this.ended = true;
+        this._stopRaf();
+        if (typeof this.onEnded === 'function') {
+          this.onEnded();
+        }
+      }
+    };
+    this.baseVideo.addEventListener('ended', this._handleNativeEnded);
+    this.twinVideo.addEventListener('ended', this._handleNativeEnded);
+  }
+
+  _ensureTwinMounted() {
+    if (this.baseVideo.parentElement && this.twinVideo.parentElement !== this.baseVideo.parentElement) {
+      this.baseVideo.insertAdjacentElement('afterend', this.twinVideo);
+    }
+  }
+
+  syncStyles() {
+    const srcStyle = this.baseVideo.style;
+    [this.baseVideo, this.twinVideo].forEach((v) => {
+      if (v !== this.baseVideo) {
+        v.style.objectFit = srcStyle.objectFit || '';
+        v.style.filter = srcStyle.filter || '';
+        v.style.top = srcStyle.top || '';
+        v.style.height = srcStyle.height || '';
+      }
+      v.muted = true;
+      v.volume = 0;
+    });
+  }
+
+  load(url, { loop = true, playing = true, startTimeSec = 0, crossfadeSec = DEFAULT_LOOP_CROSSFADE_SEC, onEnded = null } = {}) {
+    this._ensureTwinMounted();
+    this._stopRaf();
+    const token = ++this._token;
+
+    this.url = url;
+    this.loop = Boolean(loop);
+    this.playing = Boolean(playing);
+    this.crossfadeSec = Number.isFinite(Number(crossfadeSec)) ? Math.max(0, Number(crossfadeSec)) : DEFAULT_LOOP_CROSSFADE_SEC;
+    if (onEnded !== null) this.onEnded = onEnded;
+    this.ended = false;
+    this._inCrossfade = false;
+    this._crossfadeWaitingReady = false;
+    this._pausedAtMs = 0;
+    this._lastAlpha = 0;
+
+    if (!url) {
+      this.hide();
+      return;
+    }
+
+    this.front = this.baseVideo;
+    this.back = this.twinVideo;
+
+    this.syncStyles();
+    this.front.classList.remove('hidden');
+    this.front.style.zIndex = '0';
+    this.front.style.opacity = '1';
+    this.front.loop = false;
+
+    this.back.pause();
+    this.back.loop = false;
+    this.back.style.zIndex = '1';
+    this.back.style.opacity = '0';
+    this.back.classList.remove('hidden');
+
+    const twinUrl = buildTwinVideoUrl(url);
+    if (this.twinVideo.getAttribute('data-src') !== twinUrl) {
+      this.twinVideo.setAttribute('data-src', twinUrl);
+      this.twinVideo.src = twinUrl;
+      this.twinVideo.load();
+    } else {
+      try {
+        this.twinVideo.currentTime = 0;
+      } catch (_) {}
+    }
+
+    const initialSeek = Math.max(0, Number(startTimeSec) || 0);
+    const applyFrontStart = () => {
+      if (token !== this._token) return;
+      this.front.muted = true;
+      this.front.loop = false;
+      const dur = this.front.duration;
+      if (initialSeek > 0.05 && Number.isFinite(dur) && dur > 0) {
+        if (this.loop) {
+          this.front.currentTime = initialSeek % dur;
+        } else if (initialSeek >= dur) {
+          this.front.currentTime = dur;
+          this.playing = false;
+          this.ended = true;
+        } else {
+          this.front.currentTime = initialSeek;
+        }
+      } else {
+        try {
+          this.front.currentTime = 0;
+        } catch (_) {}
+      }
+
+      if (this.playing && !this.ended) {
+        this.front.play().catch(() => {});
+        this._startRaf();
+      } else {
+        this.front.pause();
+      }
+    };
+
+    if (this.baseVideo.getAttribute('data-src') !== url) {
+      this.baseVideo.setAttribute('data-src', url);
+      this.baseVideo.src = url;
+      this.baseVideo.addEventListener('loadedmetadata', applyFrontStart, { once: true });
+      this.baseVideo.load();
+    } else if (this.baseVideo.readyState >= 1) {
+      applyFrontStart();
+    } else {
+      this.baseVideo.addEventListener('loadedmetadata', applyFrontStart, { once: true });
+    }
+  }
+
+  _cancelCrossfadeToFront() {
+    this._inCrossfade = false;
+    this._crossfadeWaitingReady = false;
+    this._pausedAtMs = 0;
+    this._lastAlpha = 0;
+    this.back.pause();
+    this.back.style.opacity = '0';
+    this.back.style.zIndex = '1';
+    try {
+      if (this.back.readyState >= 1 && this.back.currentTime > 0.02) {
+        this.back.currentTime = 0;
+      }
+    } catch (_) {}
+    this.front.style.zIndex = '0';
+    this.front.style.opacity = '1';
+  }
+
+  _promoteBackToFrontImmediate() {
+    const oldFront = this.front;
+    this.front = this.back;
+    this.back = oldFront;
+    this._inCrossfade = false;
+    this._crossfadeWaitingReady = false;
+    this._pausedAtMs = 0;
+    this._lastAlpha = 0;
+
+    this.front.style.zIndex = '0';
+    this.front.style.opacity = '1';
+    this.front.loop = false;
+
+    this.back.pause();
+    this.back.loop = false;
+    this.back.style.zIndex = '1';
+    this.back.style.opacity = '0';
+    try {
+      if (this.back.readyState >= 1) {
+        this.back.currentTime = 0;
+      }
+    } catch (_) {}
+  }
+
+  _startRaf() {
+    this._stopRaf();
+    const tick = (nowMs) => {
+      if (!this.playing || !this.url) {
+        this._rafId = null;
+        return;
+      }
+
+      this.syncStyles();
+      const dur = this.front.duration;
+      if (!Number.isFinite(dur) || dur <= 0) {
+        this._rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      if (!this.loop) {
+        if (this._inCrossfade) {
+          this._cancelCrossfadeToFront();
+        }
+        this.front.loop = false;
+        this.back.classList.add('hidden');
+        this._rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      const fadeSec = computeEffectiveLoopFadeSec(dur, this.crossfadeSec);
+      if (fadeSec <= 0) {
+        if (this._inCrossfade) {
+          this._cancelCrossfadeToFront();
+        }
+        this.front.loop = true;
+        this.back.classList.add('hidden');
+        this._rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      this.front.loop = false;
+      this.back.loop = false;
+      this.back.classList.remove('hidden');
+
+      if (!this._inCrossfade) {
+        const cur = this.front.currentTime || 0;
+        const remaining = dur - cur;
+        if (remaining <= fadeSec || this.front.ended) {
+          this._inCrossfade = true;
+          this._activeFadeDurSec = fadeSec;
+          this._lastAlpha = 0;
+          this.front.style.zIndex = '0';
+          this.front.style.opacity = '1';
+          this.back.style.zIndex = '1';
+          this.back.style.opacity = '0';
+          try {
+            if (this.back.currentTime > 0.08) {
+              this.back.currentTime = 0;
+            }
+          } catch (_) {}
+
+          const beginBlend = () => {
+            this._crossfadeWaitingReady = false;
+            this._crossfadeStartMs = performance.now();
+            if (this.playing) {
+              this.back.play().catch(() => {});
+            }
+          };
+
+          if (this.back.readyState >= 2) {
+            beginBlend();
+          } else {
+            this._crossfadeWaitingReady = true;
+            this.back.addEventListener('canplay', () => {
+              if (this._inCrossfade && this._crossfadeWaitingReady) {
+                beginBlend();
+              }
+            }, { once: true });
+          }
+        }
+      } else if (!this._crossfadeWaitingReady) {
+        const elapsedSec = Math.max(0, (nowMs - this._crossfadeStartMs) / 1000);
+        const p = Math.min(1, elapsedSec / Math.max(0.15, this._activeFadeDurSec));
+        const alpha = p * p * (3 - 2 * p);
+        this._lastAlpha = alpha;
+        this.back.style.opacity = alpha.toFixed(4);
+        this.front.style.opacity = '1';
+
+        if (p >= 1) {
+          this._promoteBackToFrontImmediate();
+        }
+      }
+
+      this._rafId = requestAnimationFrame(tick);
+    };
+    this._rafId = requestAnimationFrame(tick);
+  }
+
+  _stopRaf() {
+    if (this._rafId) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+  }
+
+  setLoop(loopVal) {
+    const nextLoop = Boolean(loopVal);
+    if (this.loop === nextLoop) return;
+    this.loop = nextLoop;
+    if (!nextLoop) {
+      if (this._inCrossfade) {
+        if (this._lastAlpha >= 0.5) {
+          this._promoteBackToFrontImmediate();
+        } else {
+          this._cancelCrossfadeToFront();
+        }
+      }
+      this.front.loop = false;
+      this.back.classList.add('hidden');
+    } else {
+      this.back.classList.remove('hidden');
+      this.back.style.opacity = '0';
+      if (this.ended) {
+        this.ended = false;
+        this.restart();
+      } else if (this.playing && !this._rafId) {
+        this._startRaf();
+      }
+    }
+  }
+
+  setCrossfadeSec(sec) {
+    const nextSec = Number(sec);
+    if (!Number.isFinite(nextSec)) return;
+    this.crossfadeSec = Math.max(0, nextSec);
+  }
+
+  play(syncTargetSec = null) {
+    this.syncStyles();
+    this.front.classList.remove('hidden');
+    if (this.loop) this.back.classList.remove('hidden');
+
+    if (this._inCrossfade && syncTargetSec === null) {
+      if (this._pausedAtMs > 0) {
+        this._crossfadeStartMs += Math.max(0, performance.now() - this._pausedAtMs);
+        this._pausedAtMs = 0;
+      }
+      this.playing = true;
+      this.ended = false;
+      if (!this.front.ended) this.front.play().catch(() => {});
+      this.back.play().catch(() => {});
+      this._startRaf();
+      return;
+    }
+
+    const dur = this.front.duration;
+    if (this.ended || (Number.isFinite(dur) && dur > 0 && this.front.currentTime >= dur - 0.05)) {
+      this._cancelCrossfadeToFront();
+      try {
+        this.front.currentTime = 0;
+      } catch (_) {}
+      this.ended = false;
+    } else if (syncTargetSec !== null && Number.isFinite(syncTargetSec)) {
+      const cur = this.getMetrics().cur;
+      if (Math.abs(cur - syncTargetSec) > 0.5) {
+        this._cancelCrossfadeToFront();
+        try {
+          this.front.currentTime = Math.max(0, syncTargetSec);
+        } catch (_) {}
+      }
+    }
+
+    this.playing = true;
+    this.ended = false;
+    this.front.play().catch(() => {});
+    if (this._inCrossfade) this.back.play().catch(() => {});
+    this._startRaf();
+  }
+
+  pause(syncTargetSec = null) {
+    this.playing = false;
+    this._stopRaf();
+    if (this._inCrossfade) {
+      if (syncTargetSec !== null && Number.isFinite(syncTargetSec)) {
+        const cur = this.getMetrics().cur;
+        if (Math.abs(cur - syncTargetSec) > 0.45) {
+          this._cancelCrossfadeToFront();
+          try {
+            this.front.currentTime = Math.max(0, syncTargetSec);
+          } catch (_) {}
+          this.front.pause();
+          return;
+        }
+      }
+      this._pausedAtMs = performance.now();
+      this.front.pause();
+      this.back.pause();
+      return;
+    }
+
+    if (syncTargetSec !== null && Number.isFinite(syncTargetSec) && Math.abs(this.front.currentTime - syncTargetSec) > 0.35) {
+      try {
+        this.front.currentTime = Math.max(0, syncTargetSec);
+      } catch (_) {}
+    }
+    this.front.pause();
+  }
+
+  restart() {
+    this._cancelCrossfadeToFront();
+    this.ended = false;
+    this.playing = true;
+    this.front.classList.remove('hidden');
+    if (this.loop) this.back.classList.remove('hidden');
+    try {
+      this.front.currentTime = 0;
+    } catch (_) {}
+    this.front.play().catch(() => {});
+    this._startRaf();
+  }
+
+  seek(timeSec, shouldPlay = this.playing) {
+    this._cancelCrossfadeToFront();
+    const dur = this.front.duration;
+    const clamped = Number.isFinite(dur) && dur > 0
+      ? Math.max(0, Math.min(dur, Number(timeSec) || 0))
+      : Math.max(0, Number(timeSec) || 0);
+    try {
+      this.front.currentTime = clamped;
+    } catch (_) {}
+    this.ended = !this.loop && Number.isFinite(dur) && dur > 0 && clamped >= dur;
+    this.playing = Boolean(shouldPlay) && !this.ended;
+    if (this.playing) {
+      this.front.play().catch(() => {});
+      this._startRaf();
+    } else {
+      this.front.pause();
+      this._stopRaf();
+    }
+  }
+
+  hide() {
+    this._token++;
+    this.playing = false;
+    this._stopRaf();
+    this._inCrossfade = false;
+    this._crossfadeWaitingReady = false;
+    this._pausedAtMs = 0;
+    this._lastAlpha = 0;
+    this.baseVideo.pause();
+    this.twinVideo.pause();
+    this.baseVideo.classList.add('hidden');
+    this.twinVideo.classList.add('hidden');
+    this.baseVideo.style.opacity = '1';
+    this.twinVideo.style.opacity = '0';
+  }
+
+  getMetrics() {
+    const dur = Number.isFinite(this.front.duration) ? this.front.duration : 0;
+    const activeDeck = (this._inCrossfade && this._lastAlpha >= 0.5) ? this.back : this.front;
+    const cur = Number.isFinite(activeDeck.currentTime) ? activeDeck.currentTime : 0;
+    return {
+      cur,
+      dur,
+      playing: Boolean(this.playing && !this.ended),
+    };
+  }
+
+  drawCurrentFrameTo(ctx, w, h, fit = 'contain') {
+    const drawSingle = (vid) => {
+      const mw = vid.videoWidth;
+      const mh = vid.videoHeight;
+      if (!mw || !mh) return false;
+      const scale = fit === 'cover' ? Math.max(w / mw, h / mh) : Math.min(w / mw, h / mh);
+      const dw = mw * scale;
+      const dh = mh * scale;
+      ctx.drawImage(vid, (w - dw) / 2, (h - dh) / 2, dw, dh);
+      return true;
+    };
+
+    const okFront = drawSingle(this.front);
+    if (this._inCrossfade && this._lastAlpha > 0.01) {
+      ctx.save();
+      ctx.globalAlpha = this._lastAlpha;
+      const okBack = drawSingle(this.back);
+      ctx.restore();
+      return okFront || okBack;
+    }
+    return okFront;
+  }
+}
+
+function getOrCreateVideoLoopPlayer(videoEl, onEnded = null) {
+  if (!videoEl) return null;
+  if (!videoEl._videoLoopPlayer) {
+    videoEl._videoLoopPlayer = new SeamlessVideoLoopPlayer(videoEl, onEnded);
+  } else if (onEnded !== null) {
+    videoEl._videoLoopPlayer.onEnded = onEnded;
+  }
+  return videoEl._videoLoopPlayer;
+}
+
 /**
  * Odtwarzacz animowanych obrazów (GIF / animowany WebP) oparty na WebCodecs ImageDecoder.
- * Zapewnia pełne Play/Pause, Restart, Seek (przewijanie), odczyt czasu oraz zatrzymanie
- * dokładnie na ostatniej klatce, gdy Loop jest wyłączony.
+ * Zapewnia pełne Play/Pause, Restart, Seek (przewijanie), odczyt czasu, zatrzymanie
+ * na ostatniej klatce (gdy Loop wyłączony) oraz płynne przenikanie (crossfade) w pętli.
  */
 export class AnimatedImageCanvasPlayer {
   constructor(canvas, onEnded = null) {
@@ -30,6 +553,7 @@ export class AnimatedImageCanvasPlayer {
     this.onEnded = onEnded;
     this.url = null;
     this.decoder = null;
+    this.introDecoder = null;
     this.frameCount = 0;
     this.durationsSec = [];
     this.cumTimesSec = [];
@@ -37,24 +561,56 @@ export class AnimatedImageCanvasPlayer {
     this.currentTimeSec = 0;
     this.currentFrameIdx = -1;
     this.loop = true;
+    this.crossfadeSec = DEFAULT_LOOP_CROSSFADE_SEC;
     this.playing = true;
     this.ended = false;
     this._rafId = null;
     this._lastTickMs = 0;
     this._decodeToken = 0;
-    this._renderingFrame = false;
+    this._renderingOut = false;
+    this._renderingIn = false;
+    this._outCanvas = null;
+    this._outCtx = null;
+    this._inCanvas = null;
+    this._inCtx = null;
+    this._outFrameIdx = -1;
+    this._inFrameIdx = -1;
     this._fallbackImg = null;
   }
 
-  async load(url, { loop = true, playing = true, startTimeSec = 0 } = {}) {
+  _ensureFrameBuffers(w, h) {
+    if (!this._outCanvas) {
+      this._outCanvas = document.createElement('canvas');
+      this._outCtx = this._outCanvas.getContext('2d');
+    }
+    if (!this._inCanvas) {
+      this._inCanvas = document.createElement('canvas');
+      this._inCtx = this._inCanvas.getContext('2d');
+    }
+    if (this._outCanvas.width !== w || this._outCanvas.height !== h) {
+      this._outCanvas.width = w;
+      this._outCanvas.height = h;
+      this._outFrameIdx = -1;
+    }
+    if (this._inCanvas.width !== w || this._inCanvas.height !== h) {
+      this._inCanvas.width = w;
+      this._inCanvas.height = h;
+      this._inFrameIdx = -1;
+    }
+  }
+
+  async load(url, { loop = true, playing = true, startTimeSec = 0, crossfadeSec = DEFAULT_LOOP_CROSSFADE_SEC } = {}) {
     this.stopRaf();
     this._closeDecoder();
     this.url = url;
     this.loop = Boolean(loop);
+    this.crossfadeSec = Number.isFinite(Number(crossfadeSec)) ? Math.max(0, Number(crossfadeSec)) : DEFAULT_LOOP_CROSSFADE_SEC;
     this.playing = Boolean(playing);
     this.ended = false;
     this.currentTimeSec = Math.max(0, Number(startTimeSec) || 0);
     this.currentFrameIdx = -1;
+    this._outFrameIdx = -1;
+    this._inFrameIdx = -1;
     this.durationsSec = [];
     this.cumTimesSec = [];
     this.totalDurationSec = 0;
@@ -70,6 +626,7 @@ export class AnimatedImageCanvasPlayer {
         const buf = await res.arrayBuffer();
         if (token !== this._decodeToken) return;
 
+        const bufCopy = buf.slice(0);
         const decoder = new window.ImageDecoder({ data: buf, type: contentType });
         await decoder.tracks.ready;
         if (token !== this._decodeToken) {
@@ -81,21 +638,40 @@ export class AnimatedImageCanvasPlayer {
         this.decoder = decoder;
         this.frameCount = count;
 
+        if (count > 1) {
+          try {
+            const introDec = new window.ImageDecoder({ data: bufCopy, type: contentType });
+            await introDec.tracks.ready;
+            if (token !== this._decodeToken) {
+              introDec.close();
+              decoder.close();
+              return;
+            }
+            this.introDecoder = introDec;
+          } catch (_) {
+            this.introDecoder = null;
+          }
+        }
+
         const durs = [];
         const cums = [];
         let acc = 0;
+        let canvasW = 1280;
+        let canvasH = 720;
         for (let i = 0; i < count; i++) {
           const decoded = await decoder.decode({ frameIndex: i });
           if (token !== this._decodeToken) {
             decoded.image.close();
-            decoder.close();
+            this._closeDecoder();
             return;
           }
           if (i === 0) {
-            this.canvas.width = decoded.image.displayWidth || decoded.image.codedWidth || 1280;
-            this.canvas.height = decoded.image.displayHeight || decoded.image.codedHeight || 720;
+            canvasW = decoded.image.displayWidth || decoded.image.codedWidth || 1280;
+            canvasH = decoded.image.displayHeight || decoded.image.codedHeight || 720;
+            this.canvas.width = canvasW;
+            this.canvas.height = canvasH;
+            this._ensureFrameBuffers(canvasW, canvasH);
           }
-          // Czas trwania klatki w mikrosekundach -> sekundy (domyślnie 80ms gdy 0)
           const durSec = decoded.image.duration ? Math.max(0.02, decoded.image.duration / 1_000_000) : 0.08;
           durs.push(durSec);
           cums.push(acc);
@@ -117,7 +693,7 @@ export class AnimatedImageCanvasPlayer {
           }
         }
 
-        await this._renderFrameAtTime(this.currentTimeSec, token);
+        await this._renderAtTime(this.currentTimeSec, token);
         if (this.playing && this.frameCount > 1) {
           this._startRaf();
         }
@@ -160,23 +736,84 @@ export class AnimatedImageCanvasPlayer {
     return Math.max(0, Math.min(this.frameCount - 1, lo));
   }
 
-  async _renderFrameAtTime(timeSec, token = this._decodeToken) {
-    if (!this.decoder || !this.ctx || !this.canvas || this._renderingFrame) return;
-    const idx = this._findFrameIndex(timeSec);
-    if (idx === this.currentFrameIdx) return;
-    this._renderingFrame = true;
+  async _decodeSlotFrame(slot, idx, token) {
+    const isOut = slot === 'out';
+    const dec = isOut ? this.decoder : this.introDecoder;
+    const curIdx = isOut ? this._outFrameIdx : this._inFrameIdx;
+    const busy = isOut ? this._renderingOut : this._renderingIn;
+    const targetCtx = isOut ? this._outCtx : this._inCtx;
+    const targetCanvas = isOut ? this._outCanvas : this._inCanvas;
+
+    if (!dec || !targetCtx || !targetCanvas || idx === curIdx || busy) return;
+    if (isOut) this._renderingOut = true;
+    else this._renderingIn = true;
+
     try {
-      const { image } = await this.decoder.decode({ frameIndex: idx });
-      if (token === this._decodeToken && this.ctx && this.canvas) {
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        this.ctx.drawImage(image, 0, 0, this.canvas.width, this.canvas.height);
-        this.currentFrameIdx = idx;
+      const { image } = await dec.decode({ frameIndex: idx });
+      if (token === this._decodeToken && targetCtx && targetCanvas) {
+        targetCtx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+        targetCtx.drawImage(image, 0, 0, targetCanvas.width, targetCanvas.height);
+        if (isOut) this._outFrameIdx = idx;
+        else this._inFrameIdx = idx;
       }
       image.close();
     } catch (_) {
       // ignore decode race
     } finally {
-      this._renderingFrame = false;
+      if (isOut) this._renderingOut = false;
+      else this._renderingIn = false;
+    }
+  }
+
+  async _renderAtTime(timeSec, token = this._decodeToken) {
+    if (!this.decoder || !this.ctx || !this.canvas) return;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    this._ensureFrameBuffers(w, h);
+
+    const fadeSec = (this.loop && this.introDecoder && this.frameCount >= 4)
+      ? computeEffectiveLoopFadeSec(this.totalDurationSec, this.crossfadeSec)
+      : 0;
+    const fadeStart = this.totalDurationSec - fadeSec;
+
+    if (fadeSec > 0 && timeSec >= fadeStart) {
+      const idxOut = this._findFrameIndex(timeSec);
+      const tIn = Math.max(0, timeSec - fadeStart);
+      const idxIn = this._findFrameIndex(tIn);
+
+      await Promise.all([
+        this._decodeSlotFrame('out', idxOut, token),
+        this._decodeSlotFrame('in', idxIn, token),
+      ]);
+      if (token !== this._decodeToken || !this.ctx) return;
+
+      const p = Math.max(0, Math.min(1, tIn / fadeSec));
+      const alpha = p * p * (3 - 2 * p);
+      this.ctx.clearRect(0, 0, w, h);
+      if (this._outFrameIdx >= 0 && this._inFrameIdx >= 0) {
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = 'lighter';
+        this.ctx.globalAlpha = 1 - alpha;
+        this.ctx.drawImage(this._outCanvas, 0, 0, w, h);
+        this.ctx.globalAlpha = alpha;
+        this.ctx.drawImage(this._inCanvas, 0, 0, w, h);
+        this.ctx.restore();
+      } else if (this._outFrameIdx >= 0) {
+        this.ctx.drawImage(this._outCanvas, 0, 0, w, h);
+      }
+      this.currentFrameIdx = alpha >= 0.5 ? idxIn : idxOut;
+      return;
+    }
+
+    const idx = this._findFrameIndex(timeSec);
+    if (idx !== this._outFrameIdx) {
+      await this._decodeSlotFrame('out', idx, token);
+    }
+    if (token !== this._decodeToken || !this.ctx) return;
+    if (this._outFrameIdx >= 0 && this.currentFrameIdx !== this._outFrameIdx) {
+      this.ctx.clearRect(0, 0, w, h);
+      this.ctx.drawImage(this._outCanvas, 0, 0, w, h);
+      this.currentFrameIdx = this._outFrameIdx;
     }
   }
 
@@ -192,16 +829,32 @@ export class AnimatedImageCanvasPlayer {
       this._lastTickMs = nowMs;
       let nextTime = this.currentTimeSec + dt;
 
+      const fadeSec = (this.loop && this.introDecoder && this.frameCount >= 4)
+        ? computeEffectiveLoopFadeSec(this.totalDurationSec, this.crossfadeSec)
+        : 0;
+
       if (nextTime >= this.totalDurationSec) {
         if (this.loop) {
-          nextTime = nextTime % this.totalDurationSec;
+          if (fadeSec > 0 && this.totalDurationSec > fadeSec) {
+            const cycleLen = this.totalDurationSec - fadeSec;
+            nextTime = fadeSec + ((nextTime - this.totalDurationSec) % cycleLen);
+            [this.decoder, this.introDecoder] = [this.introDecoder, this.decoder];
+            [this._outCanvas, this._inCanvas] = [this._inCanvas, this._outCanvas];
+            [this._outCtx, this._inCtx] = [this._inCtx, this._outCtx];
+            this._outFrameIdx = this._inFrameIdx;
+            this._inFrameIdx = -1;
+            this.currentFrameIdx = -1;
+          } else {
+            nextTime = nextTime % this.totalDurationSec;
+          }
           this.ended = false;
         } else {
           this.currentTimeSec = this.totalDurationSec;
           this.playing = false;
           this.ended = true;
           this._rafId = null;
-          this._renderFrameAtTime(this.totalDurationSec);
+          this.currentFrameIdx = -1;
+          this._renderAtTime(this.totalDurationSec);
           if (typeof this.onEnded === 'function') {
             this.onEnded();
           }
@@ -210,7 +863,10 @@ export class AnimatedImageCanvasPlayer {
       }
 
       this.currentTimeSec = nextTime;
-      this._renderFrameAtTime(this.currentTimeSec);
+      if (fadeSec > 0 && this.currentTimeSec >= this.totalDurationSec - fadeSec) {
+        this.currentFrameIdx = -1;
+      }
+      this._renderAtTime(this.currentTimeSec);
       this._rafId = requestAnimationFrame(tick);
     };
     this._rafId = requestAnimationFrame(tick);
@@ -227,6 +883,8 @@ export class AnimatedImageCanvasPlayer {
     if (this.ended && this.totalDurationSec > 0) {
       this.currentTimeSec = 0;
       this.currentFrameIdx = -1;
+      this._outFrameIdx = -1;
+      this._inFrameIdx = -1;
       this.ended = false;
     }
     this.playing = true;
@@ -243,9 +901,11 @@ export class AnimatedImageCanvasPlayer {
   restart() {
     this.currentTimeSec = 0;
     this.currentFrameIdx = -1;
+    this._outFrameIdx = -1;
+    this._inFrameIdx = -1;
     this.ended = false;
     this.playing = true;
-    this._renderFrameAtTime(0);
+    this._renderAtTime(0);
     if (this.decoder && this.frameCount > 1) {
       this._startRaf();
     }
@@ -257,7 +917,9 @@ export class AnimatedImageCanvasPlayer {
     this.currentTimeSec = clamped;
     this.ended = !this.loop && dur > 0 && clamped >= dur;
     this.currentFrameIdx = -1;
-    this._renderFrameAtTime(clamped);
+    this._outFrameIdx = -1;
+    this._inFrameIdx = -1;
+    this._renderAtTime(clamped);
     if (this.playing && !this.ended && this.decoder && this.frameCount > 1 && !this._rafId) {
       this._startRaf();
     }
@@ -270,8 +932,16 @@ export class AnimatedImageCanvasPlayer {
       this.ended = false;
       this.currentTimeSec = 0;
       this.currentFrameIdx = -1;
+      this._outFrameIdx = -1;
+      this._inFrameIdx = -1;
       this.play();
     }
+  }
+
+  setCrossfadeSec(sec) {
+    const nextSec = Number(sec);
+    if (!Number.isFinite(nextSec)) return;
+    this.crossfadeSec = Math.max(0, nextSec);
   }
 
   destroy() {
@@ -288,6 +958,12 @@ export class AnimatedImageCanvasPlayer {
       } catch (_) {}
       this.decoder = null;
     }
+    if (this.introDecoder) {
+      try {
+        this.introDecoder.close();
+      } catch (_) {}
+      this.introDecoder = null;
+    }
   }
 }
 
@@ -301,6 +977,20 @@ function createOutgoingMediaSnapshot(sourceEl, outClass) {
   const h = Math.max(180, Math.round(rect.height || 720));
 
   try {
+    if (sourceEl.tagName === 'VIDEO' && sourceEl._videoLoopPlayer) {
+      const snap = document.createElement('canvas');
+      snap.width = w;
+      snap.height = h;
+      snap.className = `stage-bg-media stage-slide-outgoing ${outClass}`;
+      snap.style.top = sourceEl.style.top || '0';
+      snap.style.height = sourceEl.style.height || '100%';
+      const ctx = snap.getContext('2d');
+      const fit = sourceEl.style.objectFit || 'contain';
+      if (sourceEl._videoLoopPlayer.drawCurrentFrameTo(ctx, w, h, fit)) {
+        return snap;
+      }
+    }
+
     let mediaW = 0;
     let mediaH = 0;
     if (sourceEl.tagName === 'VIDEO') {
@@ -470,8 +1160,11 @@ export function renderSlideOrAnimationMedia(container, mediaEls, presState, opti
   if (!container || !presState || !presState.currentSlideUrl || presState.blackoutSlide) {
     if (slideImg) slideImg.classList.add('hidden');
     if (slideVideo) {
-      slideVideo.classList.add('hidden');
-      slideVideo.pause();
+      if (slideVideo._videoLoopPlayer) slideVideo._videoLoopPlayer.hide();
+      else {
+        slideVideo.classList.add('hidden');
+        slideVideo.pause();
+      }
     }
     if (slideCanvas) {
       slideCanvas.classList.add('hidden');
@@ -483,6 +1176,9 @@ export function renderSlideOrAnimationMedia(container, mediaEls, presState, opti
 
   const mediaType = presState.currentMediaType || 'image';
   const fit = presState.objectFit || (presState.isAnimation ? 'cover' : 'contain');
+  const loopFadeSec = (presState.loopCrossfadeSec != null && Number.isFinite(Number(presState.loopCrossfadeSec)))
+    ? Number(presState.loopCrossfadeSec)
+    : DEFAULT_LOOP_CROSSFADE_SEC;
   const cueKey = `${presState.presentationId || ''}|${presState.currentSlide || 1}|${presState.cueSeq || 0}|${presState.currentSlideUrl}`;
   const prevCueKey = container._lastCueKey || '';
   const isNewCue = cueKey !== prevCueKey;
@@ -502,6 +1198,9 @@ export function renderSlideOrAnimationMedia(container, mediaEls, presState, opti
   // Zastosuj dopasowanie kadru
   if (activeEl) {
     activeEl.style.objectFit = fit;
+    if (activeEl === slideVideo && slideVideo._videoLoopPlayer) {
+      slideVideo._videoLoopPlayer.syncStyles();
+    }
   }
 
   if (isNewCue) {
@@ -526,45 +1225,20 @@ export function renderSlideOrAnimationMedia(container, mediaEls, presState, opti
         slideCanvas.classList.add('hidden');
         if (slideCanvas._animPlayer) slideCanvas._animPlayer.pause();
       }
-      slideVideo.classList.remove('hidden');
-      slideVideo.muted = true;
-      slideVideo.volume = 0;
-      slideVideo.loop = Boolean(presState.animLoop);
 
-      slideVideo.onended = () => {
-        if (!slideVideo.loop && typeof onAnimEnded === 'function') {
-          onAnimEnded(presState.cueSeq);
-        }
-      };
-
-      const targetUrl = presState.currentSlideUrl;
-      const applyVideoStart = () => {
-        slideVideo.muted = true;
-        slideVideo.loop = Boolean(presState.animLoop);
-        if (initialSeekSec > 0.05 && Number.isFinite(slideVideo.duration) && slideVideo.duration > 0) {
-          slideVideo.currentTime = slideVideo.loop
-            ? (initialSeekSec % slideVideo.duration)
-            : Math.min(slideVideo.duration, initialSeekSec);
-        } else {
-          try {
-            slideVideo.currentTime = 0;
-          } catch (_) {}
-        }
-        if (presState.animPlaying !== false) {
-          slideVideo.play().catch(() => {});
-        } else {
-          slideVideo.pause();
-        }
-      };
-
-      if (slideVideo.getAttribute('data-src') !== targetUrl) {
-        slideVideo.setAttribute('data-src', targetUrl);
-        slideVideo.src = targetUrl;
-        slideVideo.addEventListener('loadedmetadata', applyVideoStart, { once: true });
-        slideVideo.load();
-      } else {
-        applyVideoStart();
-      }
+      const capturedSeq = presState.cueSeq;
+      const vPlayer = getOrCreateVideoLoopPlayer(slideVideo);
+      vPlayer.load(presState.currentSlideUrl, {
+        loop: Boolean(presState.animLoop),
+        playing: presState.animPlaying !== false,
+        startTimeSec: initialSeekSec,
+        crossfadeSec: loopFadeSec,
+        onEnded: () => {
+          if (!vPlayer.loop && typeof onAnimEnded === 'function') {
+            onAnimEnded(capturedSeq);
+          }
+        },
+      });
       container._activeMediaEl = slideVideo;
     } else if (mediaType === 'anim-image' && slideCanvas) {
       if (prevVisibleEl) {
@@ -572,8 +1246,11 @@ export function renderSlideOrAnimationMedia(container, mediaEls, presState, opti
       }
       if (slideImg) slideImg.classList.add('hidden');
       if (slideVideo) {
-        slideVideo.classList.add('hidden');
-        slideVideo.pause();
+        if (slideVideo._videoLoopPlayer) slideVideo._videoLoopPlayer.hide();
+        else {
+          slideVideo.classList.add('hidden');
+          slideVideo.pause();
+        }
       }
       slideCanvas.classList.remove('hidden');
 
@@ -591,12 +1268,16 @@ export function renderSlideOrAnimationMedia(container, mediaEls, presState, opti
         loop: Boolean(presState.animLoop),
         playing: presState.animPlaying !== false,
         startTimeSec: initialSeekSec,
+        crossfadeSec: loopFadeSec,
       });
       container._activeMediaEl = slideCanvas;
     } else if (slideImg) {
       if (slideVideo) {
-        slideVideo.classList.add('hidden');
-        slideVideo.pause();
+        if (slideVideo._videoLoopPlayer) slideVideo._videoLoopPlayer.hide();
+        else {
+          slideVideo.classList.add('hidden');
+          slideVideo.pause();
+        }
       }
       if (slideCanvas) {
         slideCanvas.classList.add('hidden');
@@ -633,54 +1314,31 @@ export function renderSlideOrAnimationMedia(container, mediaEls, presState, opti
     return;
   }
 
-  // Ten sam slajd/animacja — zsynchronizuj przełącznik Loop, Fit oraz akcje paska transportu (Play/Pause/Seek/Restart)
+  // Ten sam slajd/animacja — zsynchronizuj przełącznik Loop, czas przenikania pętli, Fit oraz akcje paska transportu
   if (mediaType === 'video' && slideVideo) {
-    slideVideo.classList.remove('hidden');
-    slideVideo.muted = true;
-    const wantLoop = Boolean(presState.animLoop);
-    if (slideVideo.loop !== wantLoop) {
-      slideVideo.loop = wantLoop;
-      if (wantLoop && slideVideo.ended) {
-        slideVideo.currentTime = 0;
-        slideVideo.play().catch(() => {});
-      }
-    }
+    const vPlayer = getOrCreateVideoLoopPlayer(slideVideo);
+    vPlayer.setCrossfadeSec(loopFadeSec);
+    vPlayer.setLoop(Boolean(presState.animLoop));
+    vPlayer.syncStyles();
 
     if (container._lastAnimSeq !== presState.animActionSeq) {
       container._lastAnimSeq = presState.animActionSeq;
       const act = presState.animAction;
       const targetSec = Number(presState.animSeekSec || 0);
       if (act === 'restart') {
-        slideVideo.currentTime = 0;
-        slideVideo.play().catch(() => {});
+        vPlayer.restart();
       } else if (act === 'pause') {
-        if (Number.isFinite(targetSec) && Math.abs(slideVideo.currentTime - targetSec) > 0.35) {
-          slideVideo.currentTime = targetSec;
-        }
-        slideVideo.pause();
+        vPlayer.pause(targetSec);
       } else if (act === 'play') {
-        if (slideVideo.ended || (Number.isFinite(slideVideo.duration) && slideVideo.currentTime >= slideVideo.duration - 0.05)) {
-          slideVideo.currentTime = 0;
-        } else if (Number.isFinite(targetSec) && Math.abs(slideVideo.currentTime - targetSec) > 0.5) {
-          slideVideo.currentTime = targetSec;
-        }
-        slideVideo.play().catch(() => {});
+        vPlayer.play(targetSec);
       } else if (act === 'seek') {
-        if (Number.isFinite(slideVideo.duration) && slideVideo.duration > 0) {
-          slideVideo.currentTime = Math.max(0, Math.min(slideVideo.duration, targetSec));
-        } else {
-          slideVideo.currentTime = Math.max(0, targetSec);
-        }
-        if (presState.animPlaying !== false) {
-          slideVideo.play().catch(() => {});
-        } else {
-          slideVideo.pause();
-        }
+        vPlayer.seek(targetSec, presState.animPlaying !== false);
       }
     }
   } else if (mediaType === 'anim-image' && slideCanvas && slideCanvas._animPlayer) {
     slideCanvas.classList.remove('hidden');
     const player = slideCanvas._animPlayer;
+    player.setCrossfadeSec(loopFadeSec);
     player.setLoop(Boolean(presState.animLoop));
 
     if (container._lastAnimSeq !== presState.animActionSeq) {
@@ -736,9 +1394,16 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
 
   // 1. Konfiguracja Tła (lub aktywnego slajdu / animacji z Panelu Slajdów)
   const bgType = settings.bgType || 'gradient';
+  const isBgVideoActive = !isBrowserSlideActive
+    && bgType === 'video'
+    && Boolean(bgRecord && bgRecord.dataUrl && bgRecord.mediaType === 'video');
+
   bgLayer.style.background = '#090D16';
   bgImage.classList.add('hidden');
-  bgVideo.classList.add('hidden');
+  if (!isBgVideoActive) {
+    if (bgVideo._videoLoopPlayer) bgVideo._videoLoopPlayer.hide();
+    else bgVideo.classList.add('hidden');
+  }
 
   const stageParent = bgLayer.parentElement;
 
@@ -768,14 +1433,17 @@ export function renderStageDOM(dom, settings, liveState, bgRecord, scaleFactor =
       bgLayer.style.background = settings.bgChromaColor || '#00FF00';
     } else if ((bgType === 'image' || bgType === 'video') && bgRecord && bgRecord.dataUrl) {
       if (bgRecord.mediaType === 'video') {
-        bgVideo.classList.remove('hidden');
-        if (bgVideo.getAttribute('data-src') !== bgRecord.dataUrl) {
-          bgVideo.src = bgRecord.dataUrl;
-          bgVideo.setAttribute('data-src', bgRecord.dataUrl);
-          bgVideo.play().catch(() => {});
-        }
         bgVideo.style.objectFit = settings.bgFit || 'cover';
         bgVideo.style.filter = settings.bgBlurPx > 0 ? `blur(${settings.bgBlurPx * scaleFactor}px)` : 'none';
+        const bgLoopPlayer = getOrCreateVideoLoopPlayer(bgVideo);
+        bgLoopPlayer.syncStyles();
+        if (bgLoopPlayer.url !== bgRecord.dataUrl || !bgLoopPlayer.playing) {
+          bgLoopPlayer.load(bgRecord.dataUrl, {
+            loop: true,
+            playing: true,
+            crossfadeSec: DEFAULT_LOOP_CROSSFADE_SEC,
+          });
+        }
       } else {
         bgImage.classList.remove('hidden');
         if (bgImage.getAttribute('data-src') !== bgRecord.dataUrl) {

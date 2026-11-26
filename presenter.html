@@ -510,12 +510,24 @@
                 <button id="btnAnimRestart" class="btn btn-sm btn-outline" type="button" title="Przewiń animację na sam początek i odtwórz">⏮ Od początku</button>
                 <button id="btnAnimLoop" class="btn btn-sm btn-start" type="button" title="Włącz lub wyłącz zapętlenie (Loop) dla tej animacji">🔁 Loop: WŁ.</button>
               </div>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <label for="selAnimFit" style="font-size:11.5px; color:#cbd5e1; font-weight:700;">Kadr:</label>
-                <select id="selAnimFit" class="pl-mini-select" style="width:auto; min-width:190px;">
-                  <option value="cover">Wypełnij ekran 16:9 (Cover)</option>
-                  <option value="contain">Cały kadr bez ucinania (Contain)</option>
-                </select>
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="selAnimLoopFade" style="font-size:11.5px; color:#cbd5e1; font-weight:700;">Przenikanie pętli:</label>
+                  <select id="selAnimLoopFade" class="pl-mini-select" style="width:auto; min-width:155px;" title="Czas płynnego przenikania (crossfade) końcówki animacji w jej początek przy każdym zapętleniu">
+                    <option value="0.6">Krótkie (0.6s)</option>
+                    <option value="1.2" selected>Płynne (1.2s)</option>
+                    <option value="2">Długie (2.0s)</option>
+                    <option value="3">Bardzo długie (3.0s)</option>
+                    <option value="0">Brak — cięcie (0s)</option>
+                  </select>
+                </div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="selAnimFit" style="font-size:11.5px; color:#cbd5e1; font-weight:700;">Kadr:</label>
+                  <select id="selAnimFit" class="pl-mini-select" style="width:auto; min-width:180px;">
+                    <option value="cover">Wypełnij ekran 16:9 (Cover)</option>
+                    <option value="contain">Cały kadr bez ucinania (Contain)</option>
+                  </select>
+                </div>
               </div>
             </div>
             <div class="anim-seek-row">

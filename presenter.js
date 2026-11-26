@@ -53,6 +53,7 @@ const dom = {
   btnAnimPlayPause: document.getElementById('btnAnimPlayPause'),
   btnAnimRestart: document.getElementById('btnAnimRestart'),
   btnAnimLoop: document.getElementById('btnAnimLoop'),
+  selAnimLoopFade: document.getElementById('selAnimLoopFade'),
   selAnimFit: document.getElementById('selAnimFit'),
   rngAnimSeek: document.getElementById('rngAnimSeek'),
   lblAnimTime: document.getElementById('lblAnimTime'),
@@ -507,6 +508,9 @@ function getLocalAnimPlaybackMetrics() {
     return { cur: 0, dur: 0, playing: false };
   }
   if (currentState.currentMediaType === 'video' && dom.currentSlideVideo) {
+    if (dom.currentSlideVideo._videoLoopPlayer) {
+      return dom.currentSlideVideo._videoLoopPlayer.getMetrics();
+    }
     const dur = Number.isFinite(dom.currentSlideVideo.duration) ? dom.currentSlideVideo.duration : 0;
     const cur = Number.isFinite(dom.currentSlideVideo.currentTime) ? dom.currentSlideVideo.currentTime : 0;
     return { cur, dur, playing: !dom.currentSlideVideo.paused && !dom.currentSlideVideo.ended };
@@ -617,6 +621,12 @@ function renderState(st) {
     } else {
       dom.btnAnimLoop.className = 'btn btn-sm btn-outline';
       dom.btnAnimLoop.textContent = '⏹ Loop: WYŁ. (Stop na końcu)';
+    }
+    if (dom.selAnimLoopFade) {
+      const cf = Number(st.loopCrossfadeSec ?? 1.2);
+      dom.selAnimLoopFade.value = String(cf);
+      dom.selAnimLoopFade.disabled = !st.animLoop;
+      dom.selAnimLoopFade.style.opacity = st.animLoop ? '1' : '0.5';
     }
     dom.selAnimFit.value = st.objectFit || 'cover';
     updateAnimTransportClock();
@@ -733,12 +743,13 @@ async function pollLoop() {
 
     const topVal = isSplit && pos === 'top' ? `${areaHPct}%` : '0';
     const heightVal = isSplit ? `${100 - areaHPct}%` : '100%';
-    [dom.currentSlideImg, dom.currentSlideVideo, dom.currentSlideCanvas].forEach((el) => {
-      if (el) {
-        el.style.top = topVal;
-        el.style.height = heightVal;
-      }
+    dom.currentSlideMonitor.querySelectorAll('img, video, canvas').forEach((el) => {
+      el.style.top = topVal;
+      el.style.height = heightVal;
     });
+    if (dom.currentSlideVideo && dom.currentSlideVideo._videoLoopPlayer) {
+      dom.currentSlideVideo._videoLoopPlayer.syncStyles();
+    }
 
     if (hideSubs || !last || !last.en) {
       dom.previewSubBar.classList.add('hidden');
@@ -862,6 +873,10 @@ dom.btnAnimRestart.addEventListener('click', () => {
 dom.btnAnimLoop.addEventListener('click', () => {
   const nextLoop = !(currentState && currentState.animLoop);
   sendControl('animLoop', { loop: nextLoop }).then(() => refreshList());
+});
+
+dom.selAnimLoopFade?.addEventListener('change', () => {
+  sendControl('settings', { loopCrossfadeSec: Number(dom.selAnimLoopFade.value) });
 });
 
 dom.selAnimFit.addEventListener('change', () => {
